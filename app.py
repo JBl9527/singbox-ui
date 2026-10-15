@@ -40,7 +40,7 @@ def append_log(msg: str):
     LOG_BUFFER.append(f"[{timestamp}] {msg}")
 
 VALID_PROXY_TYPES = {
-    "vless", "vmess", "shadowsocks", "trojan", "hysteria", "hysteria2",
+    "anytls", "vless", "vmess", "shadowsocks", "trojan", "hysteria", "hysteria2",
     "tuic", "wireguard", "shadowtls", "tor", "ssh", "http", "socks"
 }
 
@@ -55,21 +55,29 @@ def classify_nodes_by_region(nodes):
     }
     for n in nodes:
         tag_lower = n.get("tag", "").lower()
-        matched = False
         for r_name, r_data in regions.items():
             if any(k in tag_lower for k in r_data["keywords"]):
                 r_data["nodes"].append(n["tag"])
-                matched = True
                 break
     return regions
 
 def sanitize_singbox_dict(cfg_dict):
-    """清理与修复配置，消除废弃字段并剔除非标 outbound 类型如 anytls"""
+    """清理与修复配置，消除 1.14 废弃字段并保留合法的 anytls 节点"""
     if not isinstance(cfg_dict, dict):
         return cfg_dict
 
-    # 1. 修复 TUN 1.10+ 地址写法
+    # 1. 修复 sing-box 1.14+ 废弃的顶层 fakeip 和 independent_cache
+    if "dns" in cfg_dict and isinstance(cfg_dict["dns"], dict):
+        cfg_dict["dns"].pop("fakeip", None)
+        cfg_dict["dns"].pop("independent_cache", None)
+        # 移除已废弃的 outbound dns 匹配规则
+        if "rules" in cfg_dict["dns"] and isinstance(cfg_dict["dns"]["rules"], list):
+            cfg_dict["dns"]["rules"] = [r for r in cfg_dict["dns"]["rules"] if "outbound" not in r]
+
+    # 2. 修复 TUN 1.10+ 地址写法并移除 1.14 废弃的 inbound sniff 字段
     for ib in cfg_dict.get("inbounds", []):
+        ib.pop("sniff", None)
+        ib.pop("sniff_override_destination", None)
         if ib.get("type") == "tun":
             if "inet4_address" in ib:
                 val = ib.pop("inet4_address")
@@ -83,7 +91,7 @@ def sanitize_singbox_dict(cfg_dict):
                     else:
                         ib["address"].append(val6)
 
-    # 2. 收集与剔除非法出站
+    # 3. 修复 1.14 废弃的 dns 出站，并收集所有有效节点 (完美支持 anytls)
     valid_outbounds = []
     valid_tags = set()
     skipped = []
@@ -91,7 +99,10 @@ def sanitize_singbox_dict(cfg_dict):
     for ob in cfg_dict.get("outbounds", []):
         otype = ob.get("type", "").lower()
         tag = ob.get("tag", "")
-        if otype in ["direct", "block", "dns", "selector", "urltest", "fallback", "loadbalance"] or otype in VALID_PROXY_TYPES:
+        # 1.14 彻底移除了 type == dns 的 outbound
+        if otype == "dns":
+            continue
+        if otype in ["direct", "block", "selector", "urltest", "fallback", "loadbalance"] or otype in VALID_PROXY_TYPES:
             valid_outbounds.append(ob)
             if tag:
                 valid_tags.add(tag)
@@ -99,14 +110,14 @@ def sanitize_singbox_dict(cfg_dict):
             skipped.append(f"{tag}({otype})")
 
     if skipped:
-        append_log(f"安全净化: 自动过滤 {len(skipped)} 个非标/不支持出站: {', '.join(skipped[:5])}")
+        append_log(f"提示: 跳过未知出站类型: {', '.join(skipped[:5])}")
 
-    # 3. 净化 selector / urltest 中的 outbounds 列表
+    # 4. 净化 selector / urltest 中的 outbounds 列表
     for ob in valid_outbounds:
         otype = ob.get("type", "").lower()
         if otype in ["selector", "urltest", "fallback", "loadbalance"]:
             nodes = ob.get("outbounds", [])
-            clean_nodes = [n for n in nodes if n in valid_tags or n in ["direct", "block", "dns", "直连", "拒绝", "dns-out"]]
+            clean_nodes = [n for n in nodes if n in valid_tags or n in ["direct", "block", "直连", "拒绝", "默认代理", "自动选择", "手动选择"]]
             if not clean_nodes:
                 clean_nodes = ["直连" if "直连" in valid_tags else "direct"]
             ob["outbounds"] = clean_nodes
@@ -114,6 +125,12 @@ def sanitize_singbox_dict(cfg_dict):
                 ob["default"] = clean_nodes[0]
 
     cfg_dict["outbounds"] = valid_outbounds
+
+    # 5. 确保 1.14 route 中具备 default_domain_resolver
+    if "route" in cfg_dict and isinstance(cfg_dict["route"], dict):
+        if "default_domain_resolver" not in cfg_dict["route"]:
+            cfg_dict["route"]["default_domain_resolver"] = "ali"
+
     return cfg_dict
 
 def sanitize_config_file(filepath):

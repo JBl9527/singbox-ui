@@ -35,10 +35,6 @@
     ],
     "rules": [
       {
-        "outbound": "any",
-        "server": "ali"
-      },
-      {
         "clash_mode": "Direct",
         "server": "ali"
       },
@@ -58,20 +54,15 @@
         "server": "fakeip"
       }
     ],
-    "fakeip": {
-      "enabled": true,
-      "inet4_range": "198.18.0.0/15"
-    },
-    "independent_cache": true
+    "final": "google",
+    "strategy": "ipv4_only"
   },
   "inbounds": [
     {
       "type": "mixed",
       "tag": "mixed-in",
       "listen": "0.0.0.0",
-      "listen_port": 2080,
-      "sniff": true,
-      "sniff_override_destination": true
+      "listen_port": 2080
     },
     {
       "type": "tun",
@@ -82,8 +73,7 @@
       ],
       "auto_route": true,
       "strict_route": false,
-      "stack": "system",
-      "sniff": true
+      "stack": "system"
     }
   ],
   "outbounds": [
@@ -449,18 +439,19 @@
     {
       "tag": "拒绝",
       "type": "block"
-    },
-    {
-      "tag": "dns-out",
-      "type": "dns"
     }
   ],
   "route": {
     "auto_detect_interface": true,
+    "default_domain_resolver": "ali",
     "rules": [
       {
         "protocol": "dns",
-        "outbound": "dns-out"
+        "action": "hijack-dns"
+      },
+      {
+        "port": 53,
+        "action": "hijack-dns"
       },
       {
         "clash_mode": "Direct",

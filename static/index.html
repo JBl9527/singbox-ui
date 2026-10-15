@@ -228,6 +228,10 @@
             <span class="text-xs text-gray-500">每 2 秒自动刷新</span>
           </div>
           <div class="flex items-center space-x-2">
+            <button onclick="copyLogs()" class="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg shadow transition flex items-center space-x-1 cursor-pointer">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"/></svg>
+              <span>一键复制日志</span>
+            </button>
             <button onclick="refreshLogs()" class="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg border border-gray-700 transition">
               手动刷新
             </button>
@@ -236,7 +240,7 @@
             </button>
           </div>
         </div>
-        <pre id="logTerminal" class="h-96 bg-gray-950 border border-gray-800 rounded-xl p-4 text-xs text-gray-300 overflow-y-auto font-mono leading-relaxed whitespace-pre-wrap"></pre>
+        <pre id="logTerminal" class="h-96 bg-gray-950 border border-gray-800 rounded-xl p-4 text-xs text-gray-300 overflow-y-auto font-mono leading-relaxed whitespace-pre-wrap select-text cursor-text"></pre>
       </div>
     </section>
 
@@ -601,6 +605,41 @@
 
     function clearLogs() {
       document.getElementById('logTerminal').innerText = '';
+    }
+
+    function copyLogs() {
+      const term = document.getElementById('logTerminal');
+      const text = term.innerText;
+      if (!text || text.trim() === '') {
+        showToast('当前暂无日志可复制', false);
+        return;
+      }
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(() => {
+          showToast('全部日志已成功复制到剪贴板！');
+        }).catch(() => {
+          fallbackCopyText(text);
+        });
+      } else {
+        fallbackCopyText(text);
+      }
+    }
+
+    function fallbackCopyText(text) {
+      const textArea = document.createElement("textarea");
+      textArea.value = text;
+      textArea.style.position = "fixed";
+      textArea.style.opacity = "0";
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      try {
+        document.execCommand('copy');
+        showToast('全部日志已成功复制到剪贴板！');
+      } catch (err) {
+        showToast('请直接在日志框内鼠标划选复制', false);
+      }
+      document.body.removeChild(textArea);
     }
 
     // 初始化加载
