@@ -70,7 +70,9 @@
       "type": "tun",
       "tag": "tun-in",
       "interface_name": "tun0",
-      "inet4_address": "172.19.0.1/30",
+      "address": [
+        "172.19.0.1/30"
+      ],
       "auto_route": true,
       "strict_route": false,
       "stack": "system",
@@ -90,7 +92,9 @@
     {
       "type": "urltest",
       "tag": "auto-fast",
-      "outbounds": [],
+      "outbounds": [
+        "direct"
+      ],
       "url": "http://www.gstatic.com/generate_204",
       "interval": "3m",
       "tolerance": 50

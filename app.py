@@ -35,9 +35,76 @@ os.makedirs(BIN_DIR, exist_ok=True)
 # 内存日志缓冲队列（最多保存300条，轻量不占内存）
 LOG_BUFFER = deque(maxlen=300)
 
-def append_log(msg: str):
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    LOG_BUFFER.append(f"[{timestamp}] {msg}")
+VALID_PROXY_TYPES = {
+    "vless", "vmess", "shadowsocks", "trojan", "hysteria", "hysteria2",
+    "tuic", "wireguard", "shadowtls", "tor", "ssh", "http", "socks"
+}
+
+def sanitize_singbox_dict(cfg_dict):
+    """清理与修复配置，消除废弃字段并剔除非标 outbound 类型如 anytls"""
+    if not isinstance(cfg_dict, dict):
+        return cfg_dict
+
+    # 1. 修复 TUN 1.10+ 地址写法
+    for ib in cfg_dict.get("inbounds", []):
+        if ib.get("type") == "tun":
+            if "inet4_address" in ib:
+                val = ib.pop("inet4_address")
+                if "address" not in ib:
+                    ib["address"] = [val] if isinstance(val, str) else val
+            if "inet6_address" in ib:
+                val6 = ib.pop("inet6_address")
+                if "address" in ib and isinstance(ib["address"], list):
+                    if isinstance(val6, list):
+                        ib["address"].extend(val6)
+                    else:
+                        ib["address"].append(val6)
+
+    # 2. 收集与剔除非法出站
+    valid_outbounds = []
+    valid_tags = set()
+    skipped = []
+
+    for ob in cfg_dict.get("outbounds", []):
+        otype = ob.get("type", "").lower()
+        tag = ob.get("tag", "")
+        if otype in ["direct", "block", "dns", "selector", "urltest", "fallback", "loadbalance"] or otype in VALID_PROXY_TYPES:
+            valid_outbounds.append(ob)
+            if tag:
+                valid_tags.add(tag)
+        else:
+            skipped.append(f"{tag}({otype})")
+
+    if skipped:
+        append_log(f"安全净化: 自动过滤 {len(skipped)} 个非标/不支持出站: {', '.join(skipped[:5])}")
+
+    # 3. 净化 selector / urltest 中的 outbounds 列表
+    for ob in valid_outbounds:
+        otype = ob.get("type", "").lower()
+        if otype in ["selector", "urltest", "fallback", "loadbalance"]:
+            nodes = ob.get("outbounds", [])
+            clean_nodes = [n for n in nodes if n in valid_tags or n in ["direct", "block", "dns", "auto-fast"]]
+            if not clean_nodes:
+                clean_nodes = ["direct"]
+            ob["outbounds"] = clean_nodes
+            if ob.get("default") and ob.get("default") not in clean_nodes:
+                ob["default"] = clean_nodes[0]
+
+    cfg_dict["outbounds"] = valid_outbounds
+    return cfg_dict
+
+def sanitize_config_file(filepath):
+    """就地净化已有配置文件"""
+    if not os.path.exists(filepath):
+        return
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data = sanitize_singbox_dict(data)
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        append_log(f"净化配置异常: {e}")
 
 class SingBoxManager:
     def __init__(self):
@@ -153,6 +220,9 @@ class SingBoxManager:
                 shutil.copy(PRESET_PATH, CONFIG_PATH)
             else:
                 return False, "未找到可用配置文件，请先配置或保存"
+
+        # 启动前自动净化配置 (防止残留 anytls 或已弃用字段)
+        sanitize_config_file(CONFIG_PATH)
 
         try:
             cmd = [self.bin_path, "run", "-c", CONFIG_PATH]
@@ -507,6 +577,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             try:
                 data = self._read_body_json()
                 config_str = data.get("config", "")
+                parsed_cfg = json.loads(config_str)
+                sanitized_cfg = sanitize_singbox_dict(parsed_cfg)
+                config_str = json.dumps(sanitized_cfg, indent=2, ensure_ascii=False)
+
                 validate = data.get("validate", True)
                 if validate:
                     ok, msg = manager.validate_config(config_str)
@@ -553,26 +627,29 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 try:
                     parsed_json = json.loads(raw_data)
                     if "outbounds" in parsed_json:
-                        if use_preset:
-                            external_outbounds = [
-                                ob for ob in parsed_json.get("outbounds", [])
-                                if ob.get("type") not in ["direct", "block", "dns", "selector", "urltest"]
-                            ]
-                            tags = [ob["tag"] for ob in external_outbounds if "tag" in ob]
+                        # 严格提取官方支持的合法代理节点
+                        valid_external = [
+                            ob for ob in parsed_json.get("outbounds", [])
+                            if ob.get("type", "").lower() in VALID_PROXY_TYPES
+                        ]
+                        tags = [ob["tag"] for ob in valid_external if "tag" in ob]
 
+                        if use_preset:
                             with open(PRESET_PATH, "r", encoding="utf-8") as f:
                                 preset = json.load(f)
 
                             for ob in preset.get("outbounds", []):
                                 if ob.get("tag") == "auto-fast":
-                                    ob["outbounds"] = tags
+                                    ob["outbounds"] = tags if tags else ["direct"]
                                 elif ob.get("tag") == "proxy":
-                                    ob["outbounds"] = ["auto-fast"] + tags + ["direct"]
+                                    ob["outbounds"] = (["auto-fast"] + tags + ["direct"]) if tags else ["auto-fast", "direct"]
 
-                            preset["outbounds"].extend(external_outbounds)
-                            final_config_str = json.dumps(preset, indent=2, ensure_ascii=False)
+                            preset["outbounds"].extend(valid_external)
+                            final_config = sanitize_singbox_dict(preset)
+                            final_config_str = json.dumps(final_config, indent=2, ensure_ascii=False)
                         else:
-                            final_config_str = json.dumps(parsed_json, indent=2, ensure_ascii=False)
+                            final_config = sanitize_singbox_dict(parsed_json)
+                            final_config_str = json.dumps(final_config, indent=2, ensure_ascii=False)
                 except json.JSONDecodeError:
                     self._send_json({
                         "success": False,
