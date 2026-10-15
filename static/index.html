@@ -229,6 +229,7 @@
           <li><strong class="text-gray-300">业务专属分流：</strong>自动分流至 <code>AI</code> (ChatGPT/Claude/Perplexity)、<code>YouTube</code>、<code>Google</code>、<code>Github</code>、<code>Telegram</code>、<code>Netflix</code>、<code>Steam</code>、<code>OneDrive</code>、<code>Microsoft</code>、<code>Apple</code>、<code>Emby</code>、<code>Wallet</code> 与 <code>漏网之鱼</code>。</li>
           <li><strong class="text-gray-300">地区分级归类：</strong>自动识别归类 <code>香港</code>、<code>日本</code>、<code>狮城</code>、<code>美国</code>、<code>台湾</code> 专属自动与手动测速组，策略组内部层次分明，拒绝平铺杂乱。</li>
           <li><strong class="text-gray-300">AnyTLS 原生兼容：</strong>100% 完整清洗并保留全部 AnyTLS 节点，适配官方 sing-box 1.14 最新字段规范。</li>
+          <li><strong class="text-indigo-400">旁路由 / 透明网关：</strong>已全自动开启底层内核 IP 转发 (<code>net.ipv4.ip_forward=1</code>) 与反向路径过滤 (<code>rp_filter=0</code>)，并内置 <code>0.0.0.0:53</code> 端口的 DNS 劫持与 Fake-IP 分流。局域网内的手机、电脑或电视盒子将【网关】与【DNS】设置为本服务器 IP，即可实现全设备免客户端透明代理，并在 Zashboard 中实时呈现所有连接。</li>
         </ul>
       </div>
     </section>

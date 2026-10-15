@@ -160,6 +160,88 @@ def ensure_tun_available() -> bool:
     except Exception:
         return False
 
+def configure_gateway_networking():
+    """
+    全自动配置 Linux 底层内核 IP 转发、关闭 rp_filter 反向路径过滤、
+    放行 iptables FORWARD 链并配置物理网卡 NAT MASQUERADE 与 DNS 重定向，
+    彻底解决旁路由网关模式下局域网设备无法转发 IP、DNS 失联与 Zashboard 抓不到数据的问题。
+    """
+    if os.name == "nt":
+        return
+
+    try:
+        # 1. 开启内核转发与关闭 rp_filter 反向路径过滤 (关键: 防止内核丢弃旁路由非对称路由包)
+        sysctl_cmd = [
+            "sysctl", "-w",
+            "net.ipv4.ip_forward=1",
+            "net.ipv4.conf.all.forwarding=1",
+            "net.ipv4.conf.default.forwarding=1",
+            "net.ipv6.conf.all.forwarding=1",
+            "net.ipv6.conf.default.forwarding=1",
+            "net.ipv4.conf.all.rp_filter=0",
+            "net.ipv4.conf.default.rp_filter=0",
+            "net.ipv4.conf.all.route_localnet=1"
+        ]
+        subprocess.run(sysctl_cmd, capture_output=True, timeout=3)
+    except Exception:
+        pass
+
+    try:
+        if os.path.exists("/proc/sys/net/ipv4/conf"):
+            for entry in os.listdir("/proc/sys/net/ipv4/conf"):
+                rp_file = f"/proc/sys/net/ipv4/conf/{entry}/rp_filter"
+                if os.path.isfile(rp_file):
+                    try:
+                        with open(rp_file, "w") as f:
+                            f.write("0\n")
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    try:
+        # 2. iptables 放行 FORWARD 链所有转发包与 tun0 接口
+        for cmd in [
+            ["iptables", "-P", "FORWARD", "ACCEPT"],
+            ["iptables", "-I", "FORWARD", "-j", "ACCEPT"],
+            ["iptables", "-I", "FORWARD", "-i", "tun0", "-j", "ACCEPT"],
+            ["iptables", "-I", "FORWARD", "-o", "tun0", "-j", "ACCEPT"],
+        ]:
+            subprocess.run(cmd, capture_output=True, timeout=2)
+
+        # 3. 兼容 Docker 运行环境中的 DOCKER-USER 链
+        chk_docker = subprocess.run(["iptables", "-L", "DOCKER-USER"], capture_output=True, timeout=2)
+        if chk_docker.returncode == 0:
+            subprocess.run(["iptables", "-I", "DOCKER-USER", "-i", "tun0", "-j", "ACCEPT"], capture_output=True, timeout=2)
+            subprocess.run(["iptables", "-I", "DOCKER-USER", "-o", "tun0", "-j", "ACCEPT"], capture_output=True, timeout=2)
+            subprocess.run(["iptables", "-I", "DOCKER-USER", "-j", "ACCEPT"], capture_output=True, timeout=2)
+
+        # 4. 获取默认物理出口网卡 (如 eth0, ens3, enp3s0 等) 并添加 MASQUERADE
+        route_proc = subprocess.run(["ip", "route", "show", "default"], capture_output=True, text=True, timeout=2)
+        phys_dev = ""
+        for line in route_proc.stdout.splitlines():
+            parts = line.split()
+            if "dev" in parts:
+                idx = parts.index("dev")
+                if idx + 1 < len(parts) and parts[idx + 1] != "tun0":
+                    phys_dev = parts[idx + 1]
+                    break
+        if phys_dev:
+            chk_nat = subprocess.run(["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", phys_dev, "-j", "MASQUERADE"], capture_output=True, timeout=2)
+            if chk_nat.returncode != 0:
+                subprocess.run(["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", phys_dev, "-j", "MASQUERADE"], capture_output=True, timeout=2)
+
+        # 5. DNS 端口 53 转发兜底 (若客户端指定了公网 DNS，也强制重定向至本机 53 端口由 sing-box 劫持)
+        chk_dns_u = subprocess.run(["iptables", "-t", "nat", "-C", "PREROUTING", "-p", "udp", "--dport", "53", "-j", "REDIRECT", "--to-ports", "53"], capture_output=True, timeout=2)
+        if chk_dns_u.returncode != 0:
+            subprocess.run(["iptables", "-t", "nat", "-A", "PREROUTING", "-p", "udp", "--dport", "53", "-j", "REDIRECT", "--to-ports", "53"], capture_output=True, timeout=2)
+
+        chk_dns_t = subprocess.run(["iptables", "-t", "nat", "-C", "PREROUTING", "-p", "tcp", "--dport", "53", "-j", "REDIRECT", "--to-ports", "53"], capture_output=True, timeout=2)
+        if chk_dns_t.returncode != 0:
+            subprocess.run(["iptables", "-t", "nat", "-A", "PREROUTING", "-p", "tcp", "--dport", "53", "-j", "REDIRECT", "--to-ports", "53"], capture_output=True, timeout=2)
+    except Exception:
+        pass
+
 VALID_PROXY_TYPES = {
     "anytls", "vless", "vmess", "shadowsocks", "trojan", "hysteria", "hysteria2",
     "tuic", "shadowtls", "naive", "snell", "tor", "ssh", "http", "socks"
@@ -290,7 +372,7 @@ DEFAULT_PRESET_CONFIG = {
                 "server": "ali"
             },
             {
-                "inbound": ["tun-in"],
+                "inbound": ["tun-in", "dns-in"],
                 "query_type": ["A", "AAAA"],
                 "action": "route",
                 "server": "fakeip",
@@ -298,7 +380,7 @@ DEFAULT_PRESET_CONFIG = {
             }
         ],
         "final": "remote",
-        "strategy": "prefer_ipv4"
+        "strategy": "ipv4_only"
     },
     "inbounds": [
         {
@@ -308,14 +390,21 @@ DEFAULT_PRESET_CONFIG = {
             "listen_port": 2080
         },
         {
+            "type": "direct",
+            "tag": "dns-in",
+            "listen": "0.0.0.0",
+            "listen_port": 53
+        },
+        {
             "type": "tun",
             "tag": "tun-in",
             "interface_name": "tun0",
             "address": ["172.19.0.1/30"],
-            "mtu": 1400,
+            "mtu": 1500,
             "auto_route": True,
-            "strict_route": False,
-            "stack": "system"
+            "strict_route": True,
+            "stack": "mixed",
+            "endpoint_independent_nat": True
         }
     ],
     "outbounds": [
@@ -628,6 +717,14 @@ DEFAULT_PRESET_CONFIG = {
             },
             {
                 "protocol": "dns",
+                "action": "hijack-dns"
+            },
+            {
+                "port": 53,
+                "action": "hijack-dns"
+            },
+            {
+                "inbound": ["dns-in"],
                 "action": "hijack-dns"
             },
             {
@@ -1064,8 +1161,9 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False):
 
     tun_supported = False if force_disable_tun else ensure_tun_available()
 
-    # --- 1. 修复 Inbounds (根据容器 /dev/net/tun 可用性自动决定是否保留 TUN) ---
+    # --- 1. 修复 Inbounds (根据容器 /dev/net/tun 可用性自动决定是否保留 TUN 与网关 DNS 监听) ---
     has_tun = False
+    has_dns_in = False
     tun_tags = set()
     clean_inbounds = []
 
@@ -1079,14 +1177,24 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False):
         ib.pop("domain_strategy", None)
         ib.pop("udp_fragment", None)
 
-        if ib.get("type") == "tun":
+        ib_type = ib.get("type")
+        ib_tag = ib.get("tag") or ""
+
+        if ib_type == "tun":
             if not tun_supported:
                 continue
             has_tun = True
-            ib_tag = ib.get("tag") or "tun-in"
+            ib_tag = ib_tag or "tun-in"
             ib["tag"] = ib_tag
             tun_tags.add(ib_tag)
             ib.pop("gso", None)
+            ib["auto_route"] = True
+            ib["strict_route"] = True
+            ib["endpoint_independent_nat"] = True
+            if ib.get("stack") not in ("mixed", "gvisor"):
+                ib["stack"] = "mixed"
+            if not ib.get("mtu") or ib.get("mtu", 0) < 1400:
+                ib["mtu"] = 1500
             if "inet4_address" in ib:
                 val = ib.pop("inet4_address")
                 if "address" not in ib:
@@ -1113,8 +1221,22 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False):
                         ib[new_k].extend(v)
                     elif isinstance(v, str):
                         ib[new_k].append(v)
+        elif ib_type == "direct" and (ib.get("listen_port") == 53 or ib_tag == "dns-in"):
+            has_dns_in = True
+            ib["tag"] = "dns-in"
+            ib["listen"] = "0.0.0.0"
+            ib["listen_port"] = 53
 
         clean_inbounds.append(ib)
+
+    # 旁路由与透明网关模式：当 TUN 支持时，自动注入 port 53 的 direct 监听 inbound，接收局域网设备直接发送的 DNS 查询
+    if tun_supported and not has_dns_in:
+        clean_inbounds.append({
+            "type": "direct",
+            "tag": "dns-in",
+            "listen": "0.0.0.0",
+            "listen_port": 53
+        })
 
     if not clean_inbounds:
         clean_inbounds.append({
@@ -1354,8 +1476,8 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False):
             if srv_target in fakeip_server_tags:
                 if not has_tun:
                     continue
-                # 有 TUN 时，确保 fakeip 规则仅作用于 tun 入站，避免污染内部解析和 mixed 代理
-                r["inbound"] = sorted(list(tun_tags))
+                # 有 TUN 时，确保 fakeip 规则作用于 tun 入站和 dns 入站
+                r["inbound"] = sorted(list(tun_tags | {"dns-in"}))
             elif srv_target in removed_rcode_tags or str(srv_target).startswith("rcode://"):
                 r.pop("server", None)
                 r["action"] = "reject"
@@ -1370,6 +1492,9 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False):
     if dns_cfg.get("final") not in dns_server_tags or dns_cfg.get("final") in fakeip_server_tags:
         remote_tag = next((s["tag"] for s in new_servers if s.get("type") not in ("fakeip", "local") and s["tag"] != direct_dns_tag), direct_dns_tag)
         dns_cfg["final"] = remote_tag
+
+    if not dns_cfg.get("strategy") or dns_cfg.get("strategy") == "prefer_ipv4":
+        dns_cfg["strategy"] = "ipv4_only"
 
     # --- 4. 修复 Route ---
     route_cfg = cfg_dict.get("route")
@@ -1482,10 +1607,39 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False):
         if match_keys:
             clean_route_rules.append(r)
 
+    has_port_53_hijack = any(
+        r.get("action") == "hijack-dns" and r.get("port") == 53
+        for r in clean_route_rules
+    )
+    if not has_port_53_hijack:
+        clean_route_rules.insert(0, {"port": 53, "action": "hijack-dns"})
+
+    if has_tun or tun_supported:
+        has_dns_in_hijack = any(
+            r.get("action") == "hijack-dns" and "dns-in" in (r.get("inbound") if isinstance(r.get("inbound"), list) else [r.get("inbound")])
+            for r in clean_route_rules
+        )
+        if not has_dns_in_hijack:
+            clean_route_rules.insert(0, {"inbound": ["dns-in"], "action": "hijack-dns"})
+
     if not has_dns_hijack:
         clean_route_rules.insert(0, {"protocol": "dns", "action": "hijack-dns"})
     if not has_sniff_rule:
         clean_route_rules.insert(0, {"action": "sniff"})
+
+    has_private_ip = any(
+        r.get("ip_is_private") is True and r.get("outbound") == direct_tag
+        for r in clean_route_rules
+    )
+    if not has_private_ip:
+        insert_idx = 0
+        for idx, r in enumerate(clean_route_rules):
+            if r.get("action") not in ("sniff", "hijack-dns"):
+                insert_idx = idx
+                break
+        else:
+            insert_idx = len(clean_route_rules)
+        clean_route_rules.insert(insert_idx, {"ip_is_private": True, "outbound": direct_tag})
 
     route_cfg["rules"] = clean_route_rules
 
@@ -2281,6 +2435,8 @@ class SingBoxManager:
         except Exception:
             pass
 
+        configure_gateway_networking()
+
         try:
             if self._spawn_process():
                 append_log(f"Sing-Box 核心已启动 (PID: {self.process.pid})")
@@ -2923,6 +3079,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._send_json({"success": False, "message": f"处理失败: {e}"})
 
 def run_server(port=9622):
+    configure_gateway_networking()
     load_preset_dict()
     if os.path.exists(CONFIG_PATH):
         sanitize_config_file(CONFIG_PATH)

@@ -89,7 +89,7 @@ if [ -d "/etc/modules-load.d" ]; then
     echo "tun" > /etc/modules-load.d/singbox-tun.conf
 fi
 
-# 配置并固化 IPv4 / IPv6 转发
+# 配置并固化 IPv4 / IPv6 转发与旁路由反向路径过滤 (关闭 rp_filter 防止丢弃非对称包)
 SYSCTL_CONF="/etc/sysctl.d/99-singbox.conf"
 cat <<EOF > "$SYSCTL_CONF"
 # Sing-Box Network Forwarding Optimization
@@ -98,12 +98,38 @@ net.ipv4.conf.all.forwarding = 1
 net.ipv4.conf.default.forwarding = 1
 net.ipv6.conf.all.forwarding = 1
 net.ipv6.conf.default.forwarding = 1
+net.ipv4.conf.all.rp_filter = 0
+net.ipv4.conf.default.rp_filter = 0
 net.ipv4.conf.all.route_localnet = 1
 EOF
 
 # 立即刷新内核参数生效
 sysctl -p "$SYSCTL_CONF" >/dev/null 2>&1 || sysctl --system >/dev/null 2>&1 || true
-echo -e "${GREEN}✔ 内核 IP 转发已永久开启 (net.ipv4.ip_forward=1)${NC}"
+if [ -d "/proc/sys/net/ipv4/conf" ]; then
+    for f in /proc/sys/net/ipv4/conf/*/rp_filter; do
+        [ -f "$f" ] && echo 0 > "$f" 2>/dev/null || true
+    done
+fi
+echo -e "${GREEN}✔ 内核 IP 转发与旁路由非对称路由已开启 (ip_forward=1, rp_filter=0)${NC}"
+
+# 释放 53 端口占用 (如 systemd-resolved DNSStubListener)，让 sing-box 能够监听 0.0.0.0:53 接收局域网设备 DNS 查询
+if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+    echo -e "优化 systemd-resolved 配置释放 53 端口..."
+    if [ -f "/etc/systemd/resolved.conf" ]; then
+        if grep -q "^#*DNSStubListener=" /etc/systemd/resolved.conf; then
+            sed -i 's/^#*DNSStubListener=.*/DNSStubListener=no/' /etc/systemd/resolved.conf
+        else
+            echo "DNSStubListener=no" >> /etc/systemd/resolved.conf
+        fi
+        if [ -L "/etc/resolv.conf" ]; then
+            rm -f /etc/resolv.conf
+            echo -e "nameserver 223.5.5.5\nnameserver 119.29.29.29\nnameserver 1.1.1.1" > /etc/resolv.conf
+        elif grep -q "127.0.0.53" /etc/resolv.conf 2>/dev/null; then
+            sed -i 's/127.0.0.53/223.5.5.5/g' /etc/resolv.conf
+        fi
+        systemctl restart systemd-resolved 2>/dev/null || true
+    fi
+fi
 
 # 3. 自动安装必要基础包 (Python3, curl, tar)
 echo -e "\n${BLUE}[2/6] 检查运行环境与基础组件...${NC}"
@@ -237,17 +263,40 @@ if [ ! -f "$INSTALL_DIR/static/ui/index.html" ]; then
 fi
 ln -sfn "$INSTALL_DIR/static/ui" "$INSTALL_DIR/ui" 2>/dev/null || true
 
-# 8. 自动配置防火墙规则 (放行 9622 UI 端口、2080 代理端口与 9090 Clash API 端口)
+# 8. 自动配置防火墙规则 (放行 9622 UI 端口、2080 代理端口、9090 Clash API 端口与 53 DNS 端口)
 if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
-    echo -e "配置 UFW 防火墙放行端口 ${PORT}、2080 和 9090..."
+    echo -e "配置 UFW 防火墙放行端口 ${PORT}、2080、9090 与 53 (DNS)..."
     ufw allow ${PORT}/tcp >/dev/null 2>&1 || true
     ufw allow 2080/tcp >/dev/null 2>&1 || true
     ufw allow 9090/tcp >/dev/null 2>&1 || true
+    ufw allow 53/tcp >/dev/null 2>&1 || true
+    ufw allow 53/udp >/dev/null 2>&1 || true
+    if [ -f "/etc/default/ufw" ]; then
+        sed -i 's/DEFAULT_FORWARD_POLICY="DROP"/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw 2>/dev/null || true
+        ufw reload >/dev/null 2>&1 || true
+    fi
 elif command -v firewall-cmd &> /dev/null && systemctl is-active firewalld &> /dev/null; then
-    echo -e "配置 Firewalld 防火墙放行端口 ${PORT}、2080 和 9090..."
-    firewall-cmd --add-port=${PORT}/tcp --add-port=2080/tcp --add-port=9090/tcp --permanent >/dev/null 2>&1 || true
+    echo -e "配置 Firewalld 防火墙放行端口 ${PORT}、2080、9090 与 53 (DNS)..."
+    firewall-cmd --add-port=${PORT}/tcp --add-port=2080/tcp --add-port=9090/tcp --add-port=53/tcp --add-port=53/udp --permanent >/dev/null 2>&1 || true
     firewall-cmd --reload >/dev/null 2>&1 || true
 fi
+
+# iptables 底层转发与 NAT MASQUERADE 规则注入 (保障旁路由网关模式下局域网其他设备能够顺利转发)
+iptables -P FORWARD ACCEPT 2>/dev/null || true
+iptables -I FORWARD -j ACCEPT 2>/dev/null || true
+iptables -I FORWARD -i tun0 -j ACCEPT 2>/dev/null || true
+iptables -I FORWARD -o tun0 -j ACCEPT 2>/dev/null || true
+if iptables -L DOCKER-USER >/dev/null 2>&1; then
+    iptables -I DOCKER-USER -i tun0 -j ACCEPT 2>/dev/null || true
+    iptables -I DOCKER-USER -o tun0 -j ACCEPT 2>/dev/null || true
+    iptables -I DOCKER-USER -j ACCEPT 2>/dev/null || true
+fi
+PHYS_DEV=$(ip route show default 2>/dev/null | awk '/dev/ {for(i=1;i<=NF;i++) if($i=="dev" && $(i+1)!="tun0") print $(i+1)}' | head -n 1)
+if [ -n "$PHYS_DEV" ]; then
+    iptables -t nat -C POSTROUTING -o "$PHYS_DEV" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o "$PHYS_DEV" -j MASQUERADE 2>/dev/null || true
+fi
+iptables -t nat -C PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || true
+iptables -t nat -C PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || iptables -t nat -A PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || true
 
 # 8. 注册 systemd 开机自启服务并立即启动
 echo -e "\n${BLUE}[6/6] 注册开机自启服务并启动所有组件...${NC}"
@@ -289,11 +338,14 @@ echo -e "  ▶ 内网访问地址: ${CYAN}http://${LOCAL_IP}:${PORT}${NC}"
 echo -e "  ▶ 本机回环地址: ${CYAN}http://127.0.0.1:${PORT}${NC}"
 echo -e "--------------------------------------------------------------------"
 echo -e "  ✔ 内核状态:    ${GREEN}已随系统自启，内核正在运行${NC}"
-echo -e "  ✔ IP转发功能:  ${GREEN}已全自动开启 (IPv4/IPv6 Forwarding)${NC}"
+echo -e "  ✔ IP转发功能:  ${GREEN}已全自动开启 (IPv4/IPv6 Forwarding & rp_filter=0)${NC}"
+echo -e "  ✔ 旁路网关模式: ${GREEN}已就绪 (局域网设备网关/DNS直接指向本机 IP 即可透明代理)${NC}"
+echo -e "  ✔ DNS 劫持服务: ${GREEN}0.0.0.0:53 (UDP/TCP Fake-IP 分流已开启)${NC}"
 echo -e "  ✔ 混合入站:    ${GREEN}0.0.0.0:2080 (Socks/HTTP)${NC}"
 echo -e "  ✔ 虚拟网卡:    ${GREEN}tun0 (TUN 全局接管已就绪)${NC}"
 echo -e "--------------------------------------------------------------------"
-echo -e "${YELLOW}使用提示:${NC}"
-echo -e "直接在浏览器中打开上方地址，在【订阅导入】页面输入订阅链接，"
-echo -e "点击【拉取并生成配置】，面板将全自动融合预设规则并立即生效，无需再敲任何代码！"
+echo -e "${YELLOW}旁路由 / 网关使用提示:${NC}"
+echo -e "局域网内的手机、电脑或电视盒子，只需将网络设置中的【默认网关】与【DNS 服务器】"
+echo -e "填写为本服务器 IP (${CYAN}${LOCAL_IP}${NC})，即可实现全设备免客户端透明代理与智能分流！"
+echo -e "在 Zashboard 控制台中可实时查看所有接入设备的连接数据与实时速率。"
 echo -e "${GREEN}====================================================================${NC}\n"

@@ -71,6 +71,7 @@
       },
       {
         "inbound": [
+          "dns-in",
           "tun-in"
         ],
         "query_type": [
@@ -83,7 +84,7 @@
       }
     ],
     "final": "remote",
-    "strategy": "prefer_ipv4"
+    "strategy": "ipv4_only"
   },
   "inbounds": [
     {
@@ -93,16 +94,23 @@
       "listen_port": 2080
     },
     {
+      "type": "direct",
+      "tag": "dns-in",
+      "listen": "0.0.0.0",
+      "listen_port": 53
+    },
+    {
       "type": "tun",
       "tag": "tun-in",
       "interface_name": "tun0",
       "address": [
         "172.19.0.1/30"
       ],
-      "mtu": 1400,
+      "mtu": 1500,
       "auto_route": true,
-      "strict_route": false,
-      "stack": "system"
+      "strict_route": true,
+      "stack": "mixed",
+      "endpoint_independent_nat": true
     }
   ],
   "outbounds": [
@@ -529,6 +537,18 @@
       {
         "protocol": "dns",
         "action": "hijack-dns"
+      },
+      {
+        "port": 53,
+        "action": "hijack-dns",
+        "protocol": "dns"
+      },
+      {
+        "inbound": [
+          "dns-in"
+        ],
+        "action": "hijack-dns",
+        "protocol": "dns"
       },
       {
         "ip_is_private": true,
