@@ -129,36 +129,158 @@ def save_subscriptions(data: dict):
     except Exception as e:
         append_log(f"保存 subscriptions.json 异常: {e}")
 
-def ensure_tun_available() -> bool:
+def detect_virtualization_env() -> dict:
     """
-    检测当前 Linux / 容器环境是否具备可用的 /dev/net/tun 设备。
-    若缺失则自动尝试 modprobe tun 与 mknod 创建设备节点；若因容器权限受限仍不可用则返回 False。
+    智能检测当前操作系统运行环境 (LXC / Docker / Podman 容器 vs. KVM / VMware 虚拟机 vs. 物理宿主机)
     """
     if os.name == "nt":
-        return True
+        return {
+            "is_container": False,
+            "virt_type": "windows",
+            "desc": "Windows 系统"
+        }
+
+    is_container = False
+    virt_type = "baremetal"
+    desc = "物理宿主机 (Bare Metal)"
+
+    # 1. 优先使用 systemd-detect-virt
+    try:
+        res = subprocess.run(["systemd-detect-virt"], capture_output=True, text=True, timeout=2)
+        out = (res.stdout or "").strip().lower()
+        if out and out != "none":
+            virt_type = out
+            res_c = subprocess.run(["systemd-detect-virt", "-c"], capture_output=True, text=True, timeout=2)
+            if res_c.returncode == 0 or out in ("lxc", "lxc-libcontainer", "docker", "podman", "openvz", "container-other", "systemd-nspawn"):
+                is_container = True
+    except Exception:
+        pass
+
+    # 2. 备用检测: cgroup 与文件标志
+    if not is_container:
+        if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
+            is_container = True
+            virt_type = "docker" if os.path.exists("/.dockerenv") else "podman"
+        elif os.path.exists("/proc/1/environ"):
+            try:
+                with open("/proc/1/environ", "rb") as f:
+                    content = f.read().decode("utf-8", errors="ignore")
+                    if "container=lxc" in content:
+                        is_container = True
+                        virt_type = "lxc"
+                    elif "container=docker" in content:
+                        is_container = True
+                        virt_type = "docker"
+            except Exception:
+                pass
+
+        if not is_container and os.path.exists("/proc/1/cgroup"):
+            try:
+                with open("/proc/1/cgroup", "r", encoding="utf-8", errors="ignore") as f:
+                    cg = f.read().lower()
+                    if "lxc" in cg:
+                        is_container = True
+                        virt_type = "lxc"
+                    elif "docker" in cg:
+                        is_container = True
+                        virt_type = "docker"
+                    elif "libpod" in cg or "podman" in cg:
+                        is_container = True
+                        virt_type = "podman"
+            except Exception:
+                pass
+
+    if is_container:
+        if "lxc" in virt_type:
+            desc = "LXC 独立容器"
+        elif "docker" in virt_type:
+            desc = "Docker 容器"
+        elif "podman" in virt_type:
+            desc = "Podman 容器"
+        else:
+            desc = f"容器环境 ({virt_type})"
+    else:
+        if virt_type in ("kvm", "qemu", "bochs"):
+            desc = f"KVM 虚拟机 ({virt_type})"
+        elif virt_type in ("vmware", "oracle", "xen", "microsoft"):
+            desc = f"虚拟机 ({virt_type})"
+        elif virt_type not in ("baremetal", "none", ""):
+            desc = f"虚拟化系统 ({virt_type})"
+        else:
+            desc = "物理宿主机 (Bare Metal)"
+
+    return {
+        "is_container": is_container,
+        "virt_type": virt_type,
+        "desc": desc
+    }
+
+def ensure_tun_available_detailed() -> tuple[bool, str]:
+    """
+    智能检测并配置 Linux / 容器环境的 TUN 虚拟网卡设备。
+    若为容器环境则主动开启 mknod /dev/net/tun；
+    若为普通操作系统则检测有无，无则通过 modprobe 加载并安装配置；
+    返回 (is_available, status_message)
+    """
+    if os.name == "nt":
+        return True, "Windows 虚拟网卡支持正常"
+
+    env = detect_virtualization_env()
+    is_container = env["is_container"]
     tun_path = "/dev/net/tun"
-    if not os.path.exists(tun_path):
+
+    if is_container:
+        # 容器环境: 主动创建并开启 TUN 字符设备
         try:
-            subprocess.run(["modprobe", "tun"], capture_output=True, timeout=2)
+            os.makedirs("/dev/net", exist_ok=True)
+            if not os.path.exists(tun_path):
+                subprocess.run(["mknod", tun_path, "c", "10", "200"], capture_output=True, timeout=2)
+            if os.path.exists(tun_path):
+                os.chmod(tun_path, 0o666)
         except Exception:
             pass
+    else:
+        # 正常系统: 检查有无，无则通过 modprobe 加载并写入开机模块配置
         if not os.path.exists(tun_path):
             try:
+                subprocess.run(["modprobe", "tun"], capture_output=True, timeout=2)
+            except Exception:
+                pass
+            if os.path.exists("/etc/modules-load.d") and not os.path.exists("/etc/modules-load.d/singbox-tun.conf"):
+                try:
+                    with open("/etc/modules-load.d/singbox-tun.conf", "w", encoding="utf-8") as f:
+                        f.write("tun\n")
+                except Exception:
+                    pass
+            try:
                 os.makedirs("/dev/net", exist_ok=True)
-                subprocess.run(["mknod", tun_path, "c", "10", "200"], capture_output=True, timeout=2)
-                os.chmod(tun_path, 0o666)
+                if not os.path.exists(tun_path):
+                    subprocess.run(["mknod", tun_path, "c", "10", "200"], capture_output=True, timeout=2)
+                if os.path.exists(tun_path):
+                    os.chmod(tun_path, 0o666)
             except Exception:
                 pass
 
     if not os.path.exists(tun_path):
-        return False
+        if is_container:
+            return False, "容器内无 /dev/net/tun 设备，需宿主机添加直通"
+        return False, "系统缺失 /dev/net/tun 设备节点"
 
     try:
         fd = os.open(tun_path, os.O_RDWR)
         os.close(fd)
-        return True
-    except Exception:
-        return False
+        return True, "TUN 虚拟网卡已就绪 (可读写)"
+    except PermissionError:
+        if is_container:
+            return False, "非特权容器权限限制: 需在 PVE 宿主机配置 lxc.cgroup2.devices.allow 与 lxc.mount.entry"
+        return False, "TUN 设备权限不足 (无法打开 /dev/net/tun)"
+    except Exception as e:
+        return False, f"TUN 打开异常: {e}"
+
+def ensure_tun_available() -> bool:
+    """原有接口保持兼容，返回布尔值"""
+    ok, _ = ensure_tun_available_detailed()
+    return ok
 
 def configure_gateway_networking():
     """
@@ -2347,6 +2469,11 @@ class SingBoxManager:
             except Exception:
                 pass
 
+        env_info = detect_virtualization_env()
+        tun_ok, tun_msg = ensure_tun_available_detailed()
+        env_info["tun_ok"] = tun_ok
+        env_info["tun_msg"] = tun_msg
+
         return {
             "running": running,
             "pid": self.process.pid if running else None,
@@ -2355,7 +2482,8 @@ class SingBoxManager:
             "arch": self.get_arch(),
             "kernel_version": self.check_version(),
             "bin_path": self.bin_path,
-            "config_exists": os.path.exists(CONFIG_PATH)
+            "config_exists": os.path.exists(CONFIG_PATH),
+            "env": env_info
         }
 
     def validate_config(self, config_content: str):

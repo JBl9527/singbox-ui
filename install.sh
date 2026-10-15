@@ -83,10 +83,108 @@ fi
 # 2. 全自动优化 Linux 内核网络配置 (IP 转发与 TUN 模块)
 echo -e "\n${BLUE}[1/6] 正在全自动配置 Linux 系统底层网络 (IP转发 / TUN网卡)...${NC}"
 
-# 加载 TUN 模块
-modprobe tun 2>/dev/null || true
-if [ -d "/etc/modules-load.d" ]; then
-    echo "tun" > /etc/modules-load.d/singbox-tun.conf
+# 检测虚拟化运行环境 (LXC/Docker 容器 vs 正常物理机/虚拟机)
+IS_CONTAINER=false
+VIRT_TYPE="baremetal"
+VIRT_DESC="物理宿主机 (Bare Metal)"
+
+if command -v systemd-detect-virt &>/dev/null; then
+    VIRT_OUT=$(systemd-detect-virt 2>/dev/null || echo "none")
+    if [ "$VIRT_OUT" != "none" ]; then
+        VIRT_TYPE="$VIRT_OUT"
+        if systemd-detect-virt -c &>/dev/null || [[ "$VIRT_OUT" =~ ^(lxc|docker|podman|openvz|container-other|systemd-nspawn)$ ]]; then
+            IS_CONTAINER=true
+        fi
+    fi
+fi
+
+if [ "$IS_CONTAINER" = false ]; then
+    if [ -f "/.dockerenv" ] || [ -f "/run/.containerenv" ]; then
+        IS_CONTAINER=true
+        VIRT_TYPE="docker"
+    elif grep -qa -E "container=(lxc|docker)" /proc/1/environ 2>/dev/null; then
+        IS_CONTAINER=true
+        VIRT_TYPE=$(grep -ao -E "container=[a-zA-Z0-9_-]+" /proc/1/environ 2>/dev/null | cut -d= -f2 || echo "lxc")
+    elif grep -q -E "/(lxc|docker|libpod|containerd)/" /proc/1/cgroup 2>/dev/null; then
+        IS_CONTAINER=true
+        VIRT_TYPE="lxc"
+    fi
+fi
+
+if [ "$IS_CONTAINER" = true ]; then
+    if [[ "$VIRT_TYPE" == *"lxc"* ]]; then
+        VIRT_DESC="LXC 独立容器"
+    elif [[ "$VIRT_TYPE" == *"docker"* ]]; then
+        VIRT_DESC="Docker 容器"
+    elif [[ "$VIRT_TYPE" == *"podman"* ]]; then
+        VIRT_DESC="Podman 容器"
+    else
+        VIRT_DESC="容器虚拟化环境 (${VIRT_TYPE})"
+    fi
+    echo -e "  ▶ 检测到系统环境: ${PURPLE}${VIRT_DESC}${NC}"
+    echo -e "  ▶ 容器模式: 正在为容器主动创建并开启 TUN 虚拟网卡设备节点..."
+    mkdir -p /dev/net
+    if [ ! -c /dev/net/tun ]; then
+        mknod /dev/net/tun c 10 200 2>/dev/null || true
+    fi
+    chmod 666 /dev/net/tun 2>/dev/null || true
+else
+    if [[ "$VIRT_TYPE" =~ ^(kvm|qemu|vmware|oracle|xen|microsoft)$ ]]; then
+        VIRT_DESC="虚拟机 (${VIRT_TYPE})"
+    else
+        VIRT_DESC="物理宿主机 (Bare Metal)"
+    fi
+    echo -e "  ▶ 检测到系统环境: ${PURPLE}${VIRT_DESC}${NC}"
+    echo -e "  ▶ 正常系统模式: 正在检测 TUN 驱动模块，若缺失则全自动安装与加载..."
+    if ! modprobe tun 2>/dev/null; then
+        echo -e "${YELLOW}  ▶ TUN 模块未就绪，正在尝试通过软件源安装当前内核驱动包...${NC}"
+        KVER=$(uname -r)
+        if command -v apt-get &>/dev/null; then
+            apt-get update -y && apt-get install -y "linux-modules-${KVER}" "linux-headers-${KVER}" 2>/dev/null || true
+        elif command -v yum &>/dev/null; then
+            yum install -y kernel-modules 2>/dev/null || true
+        fi
+        modprobe tun 2>/dev/null || true
+    fi
+    if [ -d "/etc/modules-load.d" ]; then
+        echo "tun" > /etc/modules-load.d/singbox-tun.conf
+    fi
+    if [ -f "/etc/modules" ] && ! grep -q "^tun$" /etc/modules 2>/dev/null; then
+        echo "tun" >> /etc/modules
+    fi
+    mkdir -p /dev/net
+    if [ ! -c /dev/net/tun ]; then
+        mknod /dev/net/tun c 10 200 2>/dev/null || true
+    fi
+    chmod 666 /dev/net/tun 2>/dev/null || true
+fi
+
+# 严格检测 /dev/net/tun 可读写性
+TUN_STATUS_OK=false
+if [ -c /dev/net/tun ]; then
+    if python3 -c "import os; fd = os.open('/dev/net/tun', os.O_RDWR); os.close(fd)" 2>/dev/null; then
+        TUN_STATUS_OK=true
+    fi
+fi
+
+if [ "$TUN_STATUS_OK" = true ]; then
+    echo -e "  ${GREEN}✔ TUN 虚拟网卡设备正常可用 (/dev/net/tun 读写就绪)${NC}"
+else
+    if [ "$IS_CONTAINER" = true ]; then
+        echo -e "  ${YELLOW}⚠ 提示: 当前为非特权 LXC 容器，宿主机内核默认禁止直接操作设备节点。${NC}"
+        echo -e "${CYAN}--------------------------------------------------------------------${NC}"
+        echo -e "${YELLOW}【Proxmox VE (PVE) 宿主机一键开启 TUN 直通指南】${NC}"
+        echo -e "请在 PVE 宿主机 (物理机命令行 Shell) 中运行以下命令赋予该容器 TUN 权限："
+        echo -e "  1. 打开容器配置文件: ${YELLOW}nano /etc/pve/lxc/<容器ID>.conf${NC}"
+        echo -e "  2. 在文件末尾追加以下两行:"
+        echo -e "     ${GREEN}lxc.cgroup2.devices.allow: c 10:200 rwm${NC}"
+        echo -e "     ${GREEN}lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file${NC}"
+        echo -e "  3. 重启容器生效: ${YELLOW}pct reboot <容器ID>${NC}"
+        echo -e "${CYAN}--------------------------------------------------------------------${NC}"
+        echo -e "  ${YELLOW}（注: 若未开启宿主机直通，核心将自动降级为 0.0.0.0:2080 端口代理模式）${NC}"
+    else
+        echo -e "  ${YELLOW}⚠ 警告: /dev/net/tun 暂时不可写，可能影响 TUN 透明网关分流${NC}"
+    fi
 fi
 
 # 配置并固化 IPv4 / IPv6 转发与旁路由反向路径过滤 (关闭 rp_filter 防止丢弃非对称包)
@@ -351,13 +449,17 @@ echo -e "${GREEN}===============================================================
 echo -e "  ▶ 外网访问地址: ${CYAN}http://${PUBLIC_IP}:${PORT}${NC}"
 echo -e "  ▶ 内网访问地址: ${CYAN}http://${LOCAL_IP}:${PORT}${NC}"
 echo -e "  ▶ 本机回环地址: ${CYAN}http://127.0.0.1:${PORT}${NC}"
-echo -e "--------------------------------------------------------------------"
+echo -e "  ✔ 系统环境:    ${PURPLE}${VIRT_DESC}${NC}"
 echo -e "  ✔ 内核状态:    ${GREEN}已随系统自启，内核正在运行${NC}"
 echo -e "  ✔ IP转发功能:  ${GREEN}已全自动开启 (IPv4/IPv6 Forwarding & rp_filter=0)${NC}"
 echo -e "  ✔ 旁路网关模式: ${GREEN}已就绪 (局域网设备网关/DNS直接指向本机 IP 即可透明代理)${NC}"
 echo -e "  ✔ DNS 劫持服务: ${GREEN}0.0.0.0:53 (UDP/TCP Fake-IP 分流已开启)${NC}"
 echo -e "  ✔ 混合入站:    ${GREEN}0.0.0.0:2080 (Socks/HTTP)${NC}"
-echo -e "  ✔ 虚拟网卡:    ${GREEN}tun0 (TUN 全局接管已就绪)${NC}"
+if [ "$TUN_STATUS_OK" = true ]; then
+    echo -e "  ✔ 虚拟网卡:    ${GREEN}tun0 (TUN 全局接管已就绪)${NC}"
+else
+    echo -e "  ✔ 虚拟网卡:    ${YELLOW}Mixed 代理模式 (TUN 权限受限，可按上方指南开启宿主机直通)${NC}"
+fi
 echo -e "--------------------------------------------------------------------"
 echo -e "${YELLOW}旁路由 / 网关使用提示:${NC}"
 echo -e "局域网内的手机、电脑或电视盒子，只需将网络设置中的【默认网关】与【DNS 服务器】"

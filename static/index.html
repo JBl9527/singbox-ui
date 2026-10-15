@@ -59,6 +59,11 @@
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
         </a>
 
+        <div id="envBadge" class="flex items-center space-x-1.5 px-3 py-1.5 rounded-full bg-gray-800/80 border border-gray-700 text-xs font-medium text-gray-300">
+          <span id="envIcon">💻</span>
+          <span id="envText">系统环境检测中</span>
+        </div>
+
         <div id="statusBadge" class="flex items-center space-x-2 px-3 py-1.5 rounded-full bg-gray-800 border border-gray-700 text-xs font-medium">
           <span class="w-2.5 h-2.5 rounded-full bg-gray-500 animate-pulse" id="statusDot"></span>
           <span id="statusText">检测中...</span>
@@ -78,16 +83,17 @@
         <div class="text-xl font-bold flex items-center space-x-2" id="cardRunning">--</div>
         <div class="text-xs text-gray-500 mt-2 flex items-center justify-between">
           <span>PID: <span id="cardPid">--</span></span>
-          <span>运行时间: <span id="cardUptime">--</span></span>
+          <span>运行: <span id="cardUptime">--</span></span>
         </div>
       </div>
 
       <!-- 状态卡片 2 -->
       <div class="bg-gray-900 border border-gray-800/80 rounded-2xl p-4 shadow-sm">
-        <div class="text-xs text-gray-400 font-medium uppercase tracking-wider mb-1">内存开销 / 芯片架构</div>
-        <div class="text-xl font-bold text-gray-200" id="cardMem">--</div>
-        <div class="text-xs text-gray-500 mt-2">
-          CPU 架构: <span class="text-indigo-400 font-mono" id="cardArch">--</span>
+        <div class="text-xs text-gray-400 font-medium uppercase tracking-wider mb-1">系统环境 / 虚拟网卡</div>
+        <div class="text-sm font-bold text-gray-200 truncate mt-0.5" id="cardEnv">--</div>
+        <div class="text-xs text-gray-400 mt-2 flex items-center justify-between">
+          <span>TUN: <span id="cardTun" class="font-semibold text-emerald-400">--</span></span>
+          <span>内存: <span class="text-indigo-400 font-mono" id="cardMem">--</span></span>
         </div>
       </div>
 
@@ -95,10 +101,11 @@
       <div class="bg-gray-900 border border-gray-800/80 rounded-2xl p-4 shadow-sm">
         <div class="text-xs text-gray-400 font-medium uppercase tracking-wider mb-1">Sing-Box 版本</div>
         <div class="text-sm font-semibold truncate text-gray-300" id="cardVersion" title="加载中...">--</div>
-        <div class="mt-2">
-          <button onclick="installKernel()" class="text-xs text-indigo-400 hover:text-indigo-300 underline cursor-pointer">
-            一键下载/更新官方内核
+        <div class="mt-2 flex items-center justify-between text-xs">
+          <button onclick="installKernel()" class="text-indigo-400 hover:text-indigo-300 underline cursor-pointer">
+            更新官方内核
           </button>
+          <span class="text-gray-500 font-mono text-[11px]" id="cardArch">--</span>
         </div>
       </div>
 
@@ -116,6 +123,28 @@
           </button>
         </div>
         <div class="text-[11px] text-gray-500 text-center">UI 端口: 9622 | 混合代理: 2080 | API: 9090</div>
+      </div>
+    </div>
+
+    <!-- LXC 容器 TUN 直通引导提示 (仅在检测到容器且 TUN 受限时展示) -->
+    <div id="lxcTunAlert" class="hidden bg-amber-950/40 border border-amber-500/50 rounded-2xl p-4 text-amber-200 text-xs space-y-2">
+      <div class="flex items-center justify-between">
+        <div class="font-semibold flex items-center space-x-2 text-amber-300 text-sm">
+          <span>⚠️ 检测到当前处于 LXC 容器环境，宿主机尚未开启 TUN 直通</span>
+        </div>
+        <span class="text-[11px] px-2.5 py-0.5 rounded bg-amber-900/60 text-amber-300 border border-amber-700/50">局域网透明网关必需</span>
+      </div>
+      <p class="text-gray-300 leading-relaxed">
+        当前容器无权限创建或读写 <code>/dev/net/tun</code> 设备。目前 Sing-Box 正以 <strong>0.0.0.0:2080 端口代理</strong> 模式运行。若需使用局域网设备免客户端透明网关与 Zashboard 活跃流量抓取，请在 <strong>Proxmox VE (PVE) 宿主机 Shell</strong> 中执行以下 3 步开启直通：
+      </p>
+      <div class="bg-black/60 rounded-xl p-3 font-mono text-[11px] text-emerald-400 border border-gray-800 space-y-1 select-all">
+        <div># 1. 打开容器配置文件 (将 &lt;CTID&gt; 替换为当前容器编号，例如 100):</div>
+        <div class="text-gray-300 font-semibold">nano /etc/pve/lxc/&lt;CTID&gt;.conf</div>
+        <div># 2. 在文件末尾添加以下两行:</div>
+        <div class="text-indigo-300">lxc.cgroup2.devices.allow: c 10:200 rwm</div>
+        <div class="text-indigo-300">lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file</div>
+        <div># 3. 重启容器生效:</div>
+        <div class="text-gray-300 font-semibold">pct reboot &lt;CTID&gt;</div>
       </div>
     </div>
 
@@ -407,6 +436,36 @@
         document.getElementById('cardMem').innerText = data.memory;
         document.getElementById('cardArch').innerText = data.arch;
         document.getElementById('cardVersion').innerText = data.kernel_version;
+
+        if (data.env) {
+          const envText = document.getElementById('envText');
+          const envIcon = document.getElementById('envIcon');
+          const cardEnv = document.getElementById('cardEnv');
+          const cardTun = document.getElementById('cardTun');
+          const lxcAlert = document.getElementById('lxcTunAlert');
+
+          if (envText) envText.innerText = data.env.desc || '正常系统';
+          if (envIcon) envIcon.innerText = data.env.is_container ? '📦' : '🖥️';
+          if (cardEnv) cardEnv.innerText = data.env.desc || '正常系统';
+
+          if (cardTun) {
+            if (data.env.tun_ok) {
+              cardTun.innerText = '● 可用 (tun0)';
+              cardTun.className = 'font-semibold text-emerald-400';
+            } else {
+              cardTun.innerText = '○ 权限受限 (Mixed)';
+              cardTun.className = 'font-semibold text-amber-400';
+            }
+          }
+
+          if (lxcAlert) {
+            if (data.env.is_container && !data.env.tun_ok) {
+              lxcAlert.classList.remove('hidden');
+            } else {
+              lxcAlert.classList.add('hidden');
+            }
+          }
+        }
       } catch (e) {
         console.error('获取状态失败:', e);
       }
