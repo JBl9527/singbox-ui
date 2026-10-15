@@ -277,7 +277,7 @@ class SingBoxManager:
 
     def download_kernel(self, custom_url=None):
         arch = self.get_arch()
-        version = "1.10.7"
+        version = "1.14.3"
         if not custom_url:
             url = f"https://github.com/SagerNet/sing-box/releases/download/v{version}/sing-box-{version}-linux-{arch}.tar.gz"
         else:

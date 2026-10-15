@@ -14,7 +14,7 @@ set -e
 
 PORT=9622
 INSTALL_DIR="/opt/singbox-ui"
-SINGBOX_VERSION="1.10.7"
+SINGBOX_VERSION="1.14.3"
 GITHUB_REPO="JBl9527/singbox-ui"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/${GITHUB_REPO}/main"
 
@@ -172,26 +172,38 @@ chmod +x "$INSTALL_DIR/app.py" 2>/dev/null || true
 chmod +x "$INSTALL_DIR/uninstall.sh" 2>/dev/null || true
 
 # 6. 下载并安装官方 sing-box 核心
-echo -e "\n${BLUE}[5/6] 部署官方 sing-box 内核 (集成国内镜像通道)...${NC}"
+echo -e "\n${BLUE}[5/6] 部署官方 sing-box 最新内核 (v${SINGBOX_VERSION})...${NC}"
 TARGET_BIN="$INSTALL_DIR/bin/sing-box"
 
+NEED_DOWNLOAD=false
 if [ ! -f "$TARGET_BIN" ] || [ ! -x "$TARGET_BIN" ]; then
+    NEED_DOWNLOAD=true
+else
+    CURRENT_VER=$("$TARGET_BIN" version 2>/dev/null | head -n 1 || echo "")
+    if [[ "$CURRENT_VER" != *"$SINGBOX_VERSION"* ]]; then
+        echo -e "检测到现有内核版本为: ${YELLOW}${CURRENT_VER}${NC}，准备平滑升级到最新版 (v${SINGBOX_VERSION})..."
+        NEED_DOWNLOAD=true
+    else
+        echo -e "${GREEN}✔ 已经是官方最新内核: ${CURRENT_VER}${NC}"
+    fi
+fi
+
+if [ "$NEED_DOWNLOAD" = true ]; then
     ORIGINAL_RELEASE_URL="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-${SB_ARCH}.tar.gz"
-    echo -e "正在下载匹配芯片的内核..."
+    echo -e "正在下载匹配芯片的最新内核..."
     TMP_TAR="/tmp/sing-box-${SB_ARCH}.tar.gz"
 
     if smart_download "$ORIGINAL_RELEASE_URL" "$TMP_TAR"; then
         tar -xzf "$TMP_TAR" -C /tmp/
-        EXT_DIR=$(find /tmp/ -maxdepth 1 -name "sing-box-${SINGBOX_VERSION}-linux-${SB_ARCH}" | head -n 1)
-        if [ -n "$EXT_DIR" ] && [ -f "$EXT_DIR/sing-box" ]; then
-            mv "$EXT_DIR/sing-box" "$TARGET_BIN"
+        EXT_BIN=$(find /tmp/ -type f -name "sing-box" | head -n 1)
+        if [ -n "$EXT_BIN" ] && [ -f "$EXT_BIN" ]; then
+            mv "$EXT_BIN" "$TARGET_BIN"
             chmod +x "$TARGET_BIN"
-            rm -rf "$EXT_DIR"
         fi
         rm -f "$TMP_TAR"
-        echo -e "${GREEN}✔ sing-box 内核安装成功: $($TARGET_BIN version | head -n 1)${NC}"
+        echo -e "${GREEN}✔ sing-box 最新内核部署成功: $($TARGET_BIN version | head -n 1)${NC}"
     else
-        echo -e "${YELLOW}⚠ 首次下载内核遇到波动，面板已启动，稍后可在 WebUI 页面点击【一键下载内核】${NC}"
+        echo -e "${YELLOW}⚠ 下载最新内核遇到网络波动，稍后可在 WebUI 页面点击【一键下载内核】${NC}"
     fi
 fi
 
