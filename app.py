@@ -185,6 +185,7 @@ DEFAULT_PRESET_CONFIG = {
         },
         "clash_api": {
             "external_controller": "0.0.0.0:9090",
+            "external_ui": "ui",
             "default_mode": "Rule"
         }
     },

@@ -212,14 +212,29 @@ if [ ! -f "$INSTALL_DIR/data/config.json" ] && [ -f "$INSTALL_DIR/templates/pres
     cp "$INSTALL_DIR/templates/preset_config.json" "$INSTALL_DIR/data/config.json"
 fi
 
-# 7. 自动配置防火墙规则 (放行 9622 UI 端口与 2080 代理端口)
+# 7. 部署 Zashboard 专业策略组控制台面板
+if [ ! -f "$INSTALL_DIR/static/ui/index.html" ]; then
+    echo -e "\n${BLUE}正在拉取 Zashboard 专业策略组控制台前端文件...${NC}"
+    mkdir -p "$INSTALL_DIR/static/ui"
+    TMP_ZASH="/tmp/zashboard.zip"
+    if smart_download "https://github.com/Zephyruso/zashboard/releases/latest/download/dist-cdn-fonts.zip" "$TMP_ZASH" || smart_download "https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip" "$TMP_ZASH"; then
+        python3 -c "import zipfile, os; z = zipfile.ZipFile('$TMP_ZASH', 'r'); [open(os.path.join('$INSTALL_DIR/static/ui', m.filename[5:]), 'wb').write(z.read(m)) for m in z.infolist() if m.filename.startswith('dist/') and not m.is_dir() and os.makedirs(os.path.dirname(os.path.join('$INSTALL_DIR/static/ui', m.filename[5:])), exist_ok=True) is None]" 2>/dev/null || (which unzip &>/dev/null && unzip -q -o "$TMP_ZASH" -d /tmp/zash_ext/ && cp -r /tmp/zash_ext/dist/* "$INSTALL_DIR/static/ui/") || true
+        rm -f "$TMP_ZASH" 2>/dev/null || true
+        rm -rf /tmp/zash_ext 2>/dev/null || true
+        echo -e "${GREEN}✔ Zashboard 仪表盘部署完成！${NC}"
+    fi
+fi
+ln -sfn "$INSTALL_DIR/static/ui" "$INSTALL_DIR/ui" 2>/dev/null || true
+
+# 8. 自动配置防火墙规则 (放行 9622 UI 端口、2080 代理端口与 9090 Clash API 端口)
 if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
-    echo -e "配置 UFW 防火墙放行端口 ${PORT} 和 2080..."
+    echo -e "配置 UFW 防火墙放行端口 ${PORT}、2080 和 9090..."
     ufw allow ${PORT}/tcp >/dev/null 2>&1 || true
     ufw allow 2080/tcp >/dev/null 2>&1 || true
+    ufw allow 9090/tcp >/dev/null 2>&1 || true
 elif command -v firewall-cmd &> /dev/null && systemctl is-active firewalld &> /dev/null; then
-    echo -e "配置 Firewalld 防火墙放行端口 ${PORT} 和 2080..."
-    firewall-cmd --add-port=${PORT}/tcp --add-port=2080/tcp --permanent >/dev/null 2>&1 || true
+    echo -e "配置 Firewalld 防火墙放行端口 ${PORT}、2080 和 9090..."
+    firewall-cmd --add-port=${PORT}/tcp --add-port=2080/tcp --add-port=9090/tcp --permanent >/dev/null 2>&1 || true
     firewall-cmd --reload >/dev/null 2>&1 || true
 fi
 

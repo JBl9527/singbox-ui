@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Sing-Box WebUI 管理面板</title>
-  <!-- Tailwind CSS CDN (轻量直接可用) -->
+  <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -47,12 +47,18 @@
             <span>Sing-Box WebUI</span>
             <span class="text-xs px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">Linux:9622</span>
           </h1>
-          <p class="text-xs text-gray-400">低功耗架构优化 · 节点选择与分流控制</p>
+          <p class="text-xs text-gray-400">低功耗架构优化 · 订阅融合与 Zashboard 策略组控制</p>
         </div>
       </div>
 
-      <!-- 右侧快速状态徽章 -->
+      <!-- 右侧快速状态徽章与快捷跳转 -->
       <div class="flex items-center space-x-3">
+        <a id="topZashboardLink" href="/ui/" target="_blank"
+          class="hidden sm:flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-xs font-semibold text-white shadow-md transition cursor-pointer">
+          <span>🚀 打开 Zashboard 面板</span>
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+        </a>
+
         <div id="statusBadge" class="flex items-center space-x-2 px-3 py-1.5 rounded-full bg-gray-800 border border-gray-700 text-xs font-medium">
           <span class="w-2.5 h-2.5 rounded-full bg-gray-500 animate-pulse" id="statusDot"></span>
           <span id="statusText">检测中...</span>
@@ -109,104 +115,117 @@
             停止
           </button>
         </div>
-        <div class="text-[11px] text-gray-500 text-center">UI 端口: 9622 | 混合代理: 2080</div>
+        <div class="text-[11px] text-gray-500 text-center">UI 端口: 9622 | 混合代理: 2080 | API: 9090</div>
       </div>
     </div>
 
     <!-- 选项卡导航 -->
     <div class="flex items-center space-x-2 border-b border-gray-800 pb-2 overflow-x-auto">
-      <button onclick="switchTab('nodesTab')" id="tabBtn-nodesTab" class="tab-btn px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 text-white transition whitespace-nowrap flex items-center space-x-1.5">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-        <span>节点选择</span>
+      <button onclick="switchTab('subTab')" id="tabBtn-subTab" class="tab-btn px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 text-white transition whitespace-nowrap flex items-center space-x-1.5 cursor-pointer">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+        <span>订阅导入与预设</span>
       </button>
-      <button onclick="switchTab('subTab')" id="tabBtn-subTab" class="tab-btn px-4 py-2 text-sm font-medium rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition whitespace-nowrap">
-        订阅导入与预设
+      <button onclick="switchTab('zashboardTab')" id="tabBtn-zashboardTab" class="tab-btn px-4 py-2 text-sm font-medium rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition whitespace-nowrap flex items-center space-x-1.5 cursor-pointer">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+        <span>🎯 Zashboard 策略组控制台</span>
       </button>
-      <button onclick="switchTab('configTab')" id="tabBtn-configTab" class="tab-btn px-4 py-2 text-sm font-medium rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition whitespace-nowrap">
-        原生配置 (JSON)
+      <button onclick="switchTab('configTab')" id="tabBtn-configTab" class="tab-btn px-4 py-2 text-sm font-medium rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition whitespace-nowrap cursor-pointer">
+        运行配置 (JSON)
       </button>
-      <button onclick="switchTab('logsTab')" id="tabBtn-logsTab" class="tab-btn px-4 py-2 text-sm font-medium rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition whitespace-nowrap">
+      <button onclick="switchTab('logsTab')" id="tabBtn-logsTab" class="tab-btn px-4 py-2 text-sm font-medium rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition whitespace-nowrap cursor-pointer">
         运行日志
       </button>
     </div>
 
-    <!-- Tab 0: 节点选择与分流管理 (重点功能) -->
-    <section id="nodesTab" class="tab-content space-y-6">
-      <div class="flex flex-wrap items-center justify-between gap-3 bg-gray-900 border border-gray-800 rounded-2xl p-4">
-        <div>
-          <h2 class="text-sm font-semibold text-white flex items-center space-x-2">
-            <span>出站节点选择面板</span>
-            <span id="nodeSourceBadge" class="text-[10px] px-2 py-0.5 rounded bg-gray-800 text-gray-400 border border-gray-700">加载中</span>
-          </h2>
-          <p class="text-xs text-gray-400 mt-0.5">点击任意节点即可实时切换，无需重启核心；支持单个节点测速与组内测速。</p>
-        </div>
-        <div class="flex items-center space-x-2">
-          <button onclick="loadNodes(true)" class="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg border border-gray-700 transition flex items-center space-x-1">
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-            <span>刷新节点</span>
+    <!-- Tab 1: 订阅导入与预设模版 (默认主面板) -->
+    <section id="subTab" class="tab-content space-y-6">
+      <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div>
+            <h2 class="text-base font-semibold text-white">订阅导入与预设策略组融合</h2>
+            <p class="text-xs text-gray-400 mt-0.5">
+              支持 Sub-Store 链接、Sing-Box JSON、Base64/明文 AnyTLS/VLESS/HY2/SS 链接及 Clash YAML 订阅。
+            </p>
+          </div>
+          <button onclick="switchTab('zashboardTab')" class="px-3.5 py-1.5 text-xs bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 rounded-xl transition flex items-center space-x-1 cursor-pointer">
+            <span>前往 Zashboard 策略组面板 ➔</span>
           </button>
         </div>
-      </div>
 
-      <!-- 策略组容器 -->
-      <div id="proxyGroupsContainer" class="space-y-6">
-        <!-- 动态生成各个策略组卡片 -->
-        <div class="text-center py-12 text-gray-500 text-sm">正在加载出站策略组与节点数据...</div>
-      </div>
-    </section>
-
-    <!-- Tab 1: 订阅导入与预设模版 -->
-    <section id="subTab" class="tab-content hidden space-y-6">
-      <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6">
-        <h2 class="text-base font-semibold text-white mb-2">订阅导入与预设模板融合</h2>
-        <p class="text-xs text-gray-400 mb-6">
-          自动拉取远程订阅中的代理节点（Outbounds），并将节点智能注入到预设的最佳实践规则模板中（含 DNS 防污染、国内绕过直连、自动优选 urltest 分组、TUN 虚拟网卡与 Mixed 混合入站端口 2080）。
-        </p>
-
-        <div class="space-y-4 max-w-3xl">
+        <div class="space-y-4 max-w-3xl mt-4">
           <div>
-            <label class="block text-xs font-medium text-gray-300 mb-1">节点订阅链接 (Subscription URL)</label>
+            <label class="block text-xs font-medium text-gray-300 mb-1.5">节点订阅链接 (Subscription URL) 或 节点文本</label>
             <div class="flex gap-2">
-              <input type="text" id="subUrlInput" placeholder="https://your-provider.com/api/v1/client/subscribe?token=xxx"
+              <input type="text" id="subUrlInput" placeholder="输入 Sub-Store 链接 (如 /download/xxx) 或常规机场订阅"
                 class="flex-1 bg-gray-950 border border-gray-800 rounded-xl px-4 py-2.5 text-xs text-gray-200 focus:outline-none focus:border-indigo-500">
-              <button onclick="importSubscription()" class="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow transition">
+              <button onclick="importSubscription()" class="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow transition cursor-pointer">
                 拉取并生成配置
               </button>
             </div>
           </div>
 
-          <div class="flex items-center space-x-3 text-xs text-gray-300 pt-2">
-            <input type="checkbox" id="usePresetCheck" checked class="w-4 h-4 rounded text-indigo-600 bg-gray-800 border-gray-700 focus:ring-indigo-500">
-            <label for="usePresetCheck">融合预设模板 (自动生成 geoip/geosite 大陆直连规则、DNS、自动测速优选分组)</label>
+          <div class="flex items-center space-x-3 text-xs text-gray-300 pt-1">
+            <input type="checkbox" id="usePresetCheck" checked class="w-4 h-4 rounded text-indigo-600 bg-gray-800 border-gray-700 focus:ring-indigo-500 cursor-pointer">
+            <label for="usePresetCheck" class="cursor-pointer">融合专业预设模板 (自动归类注入 AI、YouTube、Google、地区分组等 26 个策略组)</label>
           </div>
 
-          <div class="border-t border-gray-800/80 pt-4 mt-4">
-            <div class="text-xs font-semibold text-gray-300 mb-2">预设模板核心特性：</div>
-            <ul class="text-xs text-gray-400 space-y-1 list-disc list-inside">
-              <li><strong class="text-gray-300">节点选择支持：</strong>内置 <code>experimental.clash_api (127.0.0.1:9090)</code> 控制接口，支持 Web 界面零中断实时切节点。</li>
-              <li><strong class="text-gray-300">入站协议：</strong>同时开启 <code>mixed (0.0.0.0:2080)</code> 混合入站，以及 <code>tun (tun0)</code> 虚拟网卡全局代理。</li>
-              <li><strong class="text-gray-300">DNS 处理：</strong>阿里 DNS (223.5.5.5) 解析直连域名，Cloudflare DoH 解析境外，搭配 Fake-IP (198.18.0.0/15)。</li>
-              <li><strong class="text-gray-300">分流规则：</strong>集成 <code>geosite-cn</code> 与 <code>geoip-cn</code> 官方高质量 rule-set 规则集，国内网站零延迟直连。</li>
-              <li><strong class="text-gray-300">自动优选：</strong>自动创建 <code>auto-fast</code> urltest 测速出站组，优先选取可用延迟最低节点。</li>
+          <div class="border-t border-gray-800/80 pt-4 mt-4 bg-gray-950/40 p-4 rounded-xl border border-gray-800/60">
+            <div class="text-xs font-semibold text-gray-300 mb-2 flex items-center space-x-2">
+              <span class="w-2 h-2 rounded-full bg-indigo-500"></span>
+              <span>集成专业策略组说明：</span>
+            </div>
+            <ul class="text-xs text-gray-400 space-y-1.5 list-disc list-inside">
+              <li><strong class="text-gray-300">业务专属分流：</strong>自动分流至 <code>AI</code> (ChatGPT/Claude/Perplexity)、<code>YouTube</code>、<code>Google</code>、<code>Github</code>、<code>Telegram</code>、<code>Netflix</code>、<code>Steam</code>、<code>OneDrive</code>、<code>Microsoft</code>、<code>Apple</code>、<code>Emby</code>、<code>Wallet</code> 与 <code>漏网之鱼</code>。</li>
+              <li><strong class="text-gray-300">地区自适应聚合：</strong>自动识别归类 <code>香港</code>、<code>日本</code>、<code>狮城</code>、<code>美国</code>、<code>台湾</code> 专属自动与手动测速组。</li>
+              <li><strong class="text-gray-300">Zashboard 深度互通：</strong>通过内置 <code>Clash API (0.0.0.0:9090)</code>，可随时在 Zashboard 中分级展开各个策略组、单独测速并实时切换出站。</li>
+              <li><strong class="text-gray-300">AnyTLS 原生兼容：</strong>100% 完整清洗并保留全部 AnyTLS 节点，适配官方 sing-box 1.14 最新字段规范。</li>
             </ul>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- Tab 2: 原生配置管理 -->
+    <!-- Tab 2: Zashboard 专业策略组与节点仪表盘 -->
+    <section id="zashboardTab" class="tab-content hidden space-y-4">
+      <div class="bg-gray-900 border border-gray-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 class="text-sm font-semibold text-white flex items-center space-x-2">
+            <span>🚀 Zashboard 专业策略组与节点仪表盘</span>
+            <span class="text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800">Clash API :9090</span>
+          </h2>
+          <p class="text-xs text-gray-400 mt-0.5">支持策略组分级展开/折叠、真连接延迟测速、实时流量速率、活跃连接明细与规则命中可视化。</p>
+        </div>
+        <div class="flex items-center space-x-2">
+          <button onclick="reloadZashboardFrame()" class="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg border border-gray-700 transition flex items-center space-x-1 cursor-pointer">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            <span>刷新面板</span>
+          </button>
+          <button onclick="openZashboardNewTab()" class="px-3.5 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg shadow transition flex items-center space-x-1 cursor-pointer">
+            <span>新标签页全屏打开</span>
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- 内嵌 Zashboard 仪表盘容器 -->
+      <div class="relative w-full rounded-2xl border border-gray-800 overflow-hidden bg-gray-950 shadow-2xl">
+        <iframe id="zashboardFrame" src="" class="w-full h-[820px] border-0" allow="clipboard-read; clipboard-write"></iframe>
+      </div>
+    </section>
+
+    <!-- Tab 3: 原生配置管理 (JSON) -->
     <section id="configTab" class="tab-content hidden space-y-4">
       <div class="bg-gray-900 border border-gray-800 rounded-2xl p-4">
         <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
           <div>
             <h2 class="text-sm font-semibold text-white">编辑当前 Sing-box 运行配置 (config.json)</h2>
-            <p class="text-xs text-gray-400">可直接粘贴完整的 JSON 配置，支持点击“语法校验”测试规则是否合规。</p>
+            <p class="text-xs text-gray-400">可直接查看或微调 JSON 配置，保存时后端将自动进行 1.14 规范净化与语法预检。</p>
           </div>
           <div class="flex items-center space-x-2">
-            <button onclick="loadCurrentConfig()" class="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg border border-gray-700 transition">
+            <button onclick="loadCurrentConfig()" class="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg border border-gray-700 transition cursor-pointer">
               重新加载
             </button>
-            <button onclick="validateAndSaveConfig(true)" class="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg transition shadow">
+            <button onclick="validateAndSaveConfig(true)" class="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg transition shadow cursor-pointer">
               校验并保存配置
             </button>
           </div>
@@ -219,7 +238,7 @@
       </div>
     </section>
 
-    <!-- Tab 3: 日志 -->
+    <!-- Tab 4: 运行日志 -->
     <section id="logsTab" class="tab-content hidden space-y-4">
       <div class="bg-gray-900 border border-gray-800 rounded-2xl p-4">
         <div class="flex items-center justify-between mb-3">
@@ -232,10 +251,10 @@
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"/></svg>
               <span>一键复制日志</span>
             </button>
-            <button onclick="refreshLogs()" class="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg border border-gray-700 transition">
+            <button onclick="refreshLogs()" class="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg border border-gray-700 transition cursor-pointer">
               手动刷新
             </button>
-            <button onclick="clearLogs()" class="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg border border-gray-700 transition">
+            <button onclick="clearLogs()" class="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg border border-gray-700 transition cursor-pointer">
               清空屏幕
             </button>
           </div>
@@ -247,7 +266,7 @@
   </main>
 
   <footer class="border-t border-gray-800/80 py-4 text-center text-xs text-gray-500">
-    Sing-Box Dashboard · 轻量级 ARM/x86 适配 · 节点可视化选择 · 端口: 9622
+    Sing-Box Dashboard · 轻量级 ARM/x86 适配 · 集成 Zashboard 策略组仪表盘 · UI 端口: 9622
   </footer>
 
   <!-- 提示弹窗 (Toast) -->
@@ -256,7 +275,29 @@
   </div>
 
   <script>
-    let currentProxyData = { groups: [], nodes: {} };
+    function getZashboardUrl() {
+      const host = window.location.hostname || '127.0.0.1';
+      return `/ui/#/setup?hostname=${encodeURIComponent(host)}&port=9090`;
+    }
+
+    function loadZashboardFrame() {
+      const frame = document.getElementById('zashboardFrame');
+      if (frame && (!frame.src || frame.src === 'about:blank' || !frame.src.includes('/ui/'))) {
+        frame.src = getZashboardUrl();
+      }
+    }
+
+    function reloadZashboardFrame() {
+      const frame = document.getElementById('zashboardFrame');
+      if (frame) {
+        frame.src = getZashboardUrl() + '&t=' + Date.now();
+        showToast('正在重新连接 Zashboard 面板...');
+      }
+    }
+
+    function openZashboardNewTab() {
+      window.open(getZashboardUrl(), '_blank');
+    }
 
     function showToast(msg, isSuccess = true) {
       const toast = document.getElementById('toast');
@@ -287,8 +328,8 @@
 
       if (tabId === 'logsTab') {
         refreshLogs();
-      } else if (tabId === 'nodesTab') {
-        loadNodes();
+      } else if (tabId === 'zashboardTab') {
+        loadZashboardFrame();
       }
     }
 
@@ -329,189 +370,9 @@
         showToast(data.message, data.success);
         setTimeout(() => {
           updateStatus();
-          loadNodes();
         }, 800);
       } catch (e) {
         showToast('请求失败: ' + e, false);
-      }
-    }
-
-    // ---------------- 节点选择相关逻辑 ----------------
-    async function loadNodes(showToastTip = false) {
-      try {
-        const res = await fetch('/api/nodes');
-        const data = await res.json();
-        currentProxyData = data;
-
-        const badge = document.getElementById('nodeSourceBadge');
-        if (data.source === 'clash_api') {
-          badge.innerText = '在线热切换模式 (Clash API)';
-          badge.className = 'text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800';
-        } else {
-          badge.innerText = '配置文件模式 (持久化保存)';
-          badge.className = 'text-[10px] px-2 py-0.5 rounded bg-amber-950 text-amber-400 border border-amber-800';
-        }
-
-        renderNodesUI(data);
-        if (showToastTip) {
-          showToast('节点列表已刷新');
-        }
-      } catch (e) {
-        console.error('获取节点失败:', e);
-      }
-    }
-
-    function renderNodesUI(data) {
-      const container = document.getElementById('proxyGroupsContainer');
-      const groups = data.groups || [];
-      const nodesMap = data.nodes || {};
-
-      if (groups.length === 0) {
-        container.innerHTML = `
-          <div class="bg-gray-900 border border-gray-800 rounded-2xl p-12 text-center">
-            <svg class="w-12 h-12 mx-auto text-gray-600 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
-            <h3 class="text-sm font-semibold text-gray-300">未检测到出站策略组</h3>
-            <p class="text-xs text-gray-500 mt-1 mb-4">请先导入订阅或配置包含 selector 分组的规则</p>
-            <button onclick="switchTab('subTab')" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-medium transition">
-              前往导入订阅
-            </button>
-          </div>
-        `;
-        return;
-      }
-
-      let html = '';
-      groups.forEach(group => {
-        const isSelector = group.type === 'Selector';
-        html += `
-          <div class="bg-gray-900 border border-gray-800 rounded-2xl p-5 shadow-sm space-y-4">
-            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-gray-800/80 pb-3">
-              <div class="flex items-center space-x-3">
-                <span class="text-sm font-bold text-white tracking-wide">${group.name}</span>
-                <span class="text-[11px] px-2 py-0.5 rounded bg-gray-800 text-indigo-400 border border-indigo-900 font-mono">${group.type}</span>
-                <span class="text-xs text-gray-400">
-                  当前: <strong class="text-indigo-300">${group.now || '未指定'}</strong>
-                </span>
-              </div>
-              <div class="flex items-center space-x-2">
-                <button onclick="testGroupDelays('${group.name}')" class="px-2.5 py-1 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg border border-gray-700 transition flex items-center space-x-1">
-                  <svg class="w-3 h-3 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-                  <span>组内测速</span>
-                </button>
-              </div>
-            </div>
-
-            <!-- 节点网格卡片 -->
-            <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
-        `;
-
-        (group.all || []).forEach(nodeName => {
-          const isSelected = (group.now === nodeName);
-          const nodeInfo = nodesMap[nodeName] || {};
-          const nType = (nodeInfo.type || (nodeName === 'direct' ? 'DIRECT' : (nodeName === 'auto-fast' ? 'URLTEST' : 'PROXY'))).toUpperCase();
-          const delay = nodeInfo.delay || 0;
-
-          // 延迟颜色
-          let delayBadge = `<span id="delay-${group.name}-${CSS.escape(nodeName)}" class="text-[10px] text-gray-500 font-mono">-- ms</span>`;
-          if (delay > 0) {
-            let delayColor = 'text-emerald-400';
-            if (delay > 250 && delay <= 500) delayColor = 'text-amber-400';
-            if (delay > 500) delayColor = 'text-rose-400';
-            delayBadge = `<span id="delay-${group.name}-${CSS.escape(nodeName)}" class="text-[10px] font-mono ${delayColor}">${delay} ms</span>`;
-          }
-
-          html += `
-            <div onclick="${isSelector ? `selectNode('${group.name}', '${nodeName}')` : ''}"
-              class="relative rounded-xl p-3 border text-left transition cursor-pointer select-none flex flex-col justify-between h-20 ${
-                isSelected 
-                  ? 'bg-indigo-950/60 border-indigo-500 text-white shadow-md shadow-indigo-500/10' 
-                  : 'bg-gray-950/70 border-gray-800/90 text-gray-300 hover:border-gray-700 hover:bg-gray-900/80'
-              }">
-              
-              <div class="flex items-start justify-between gap-1">
-                <span class="text-xs font-medium truncate flex-1" title="${nodeName}">
-                  ${nodeName}
-                </span>
-                ${isSelected ? '<span class="w-2 h-2 rounded-full bg-indigo-400 shadow-sm shadow-indigo-400 flex-shrink-0 mt-1"></span>' : ''}
-              </div>
-
-              <div class="flex items-center justify-between mt-2 pt-1 border-t border-gray-800/40">
-                <span class="text-[10px] text-gray-500 font-mono uppercase">${nType}</span>
-                ${delayBadge}
-              </div>
-            </div>
-          `;
-        });
-
-        html += `
-            </div>
-          </div>
-        `;
-      });
-
-      container.innerHTML = html;
-    }
-
-    async function selectNode(groupName, nodeName) {
-      try {
-        const res = await fetch('/api/nodes/select', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ group: groupName, node: nodeName })
-        });
-        const data = await res.json();
-        showToast(data.message, data.success);
-        if (data.success) {
-          // 本地即刻响应更新高亮
-          if (currentProxyData && currentProxyData.groups) {
-            const grp = currentProxyData.groups.find(g => g.name === groupName);
-            if (grp) grp.now = nodeName;
-            renderNodesUI(currentProxyData);
-          }
-        }
-      } catch (e) {
-        showToast('切换节点失败: ' + e, false);
-      }
-    }
-
-    async function testSingleNodeDelay(groupName, nodeName) {
-      const delayEl = document.getElementById(`delay-${groupName}-${CSS.escape(nodeName)}`);
-      if (delayEl) {
-        delayEl.innerText = '测速中...';
-        delayEl.className = 'text-[10px] font-mono text-gray-400 animate-pulse';
-      }
-      try {
-        const res = await fetch(`/api/nodes/delay?node=${encodeURIComponent(nodeName)}`);
-        const data = await res.json();
-        if (data.success && delayEl) {
-          const d = data.delay;
-          let delayColor = 'text-emerald-400';
-          if (d > 250 && d <= 500) delayColor = 'text-amber-400';
-          if (d > 500) delayColor = 'text-rose-400';
-          delayEl.innerText = `${d} ms`;
-          delayEl.className = `text-[10px] font-mono ${delayColor}`;
-        } else if (delayEl) {
-          delayEl.innerText = '超时';
-          delayEl.className = 'text-[10px] font-mono text-rose-500';
-        }
-      } catch (e) {
-        if (delayEl) {
-          delayEl.innerText = '失败';
-          delayEl.className = 'text-[10px] font-mono text-rose-500';
-        }
-      }
-    }
-
-    async function testGroupDelays(groupName) {
-      if (!currentProxyData || !currentProxyData.groups) return;
-      const grp = currentProxyData.groups.find(g => g.name === groupName);
-      if (!grp || !grp.all) return;
-
-      showToast(`正在对策略组 [${groupName}] 进行测速...`);
-      // 控制并发，避免弱 CPU / 网络堵塞
-      const nodes = grp.all.filter(n => n !== 'direct' && n !== 'block');
-      for (const node of nodes) {
-        testSingleNodeDelay(groupName, node);
       }
     }
 
@@ -539,7 +400,6 @@
         if (data.success) {
           setTimeout(() => {
             updateStatus();
-            loadNodes();
           }, 1000);
         }
       } catch (e) {
@@ -551,7 +411,7 @@
       const url = document.getElementById('subUrlInput').value.trim();
       const usePreset = document.getElementById('usePresetCheck').checked;
       if (!url) {
-        showToast('请输入订阅 URL', false);
+        showToast('请输入订阅 URL 或节点内容', false);
         return;
       }
 
@@ -566,8 +426,11 @@
         showToast(data.message, data.success);
         if (data.success && data.config) {
           document.getElementById('configEditor').value = data.config;
-          loadNodes();
-          switchTab('nodesTab');
+          // 导入成功后，自动加载并平滑切换到 Zashboard 策略组面板
+          setTimeout(() => {
+            switchTab('zashboardTab');
+            reloadZashboardFrame();
+          }, 1500);
         }
       } catch (e) {
         showToast('导入失败: ' + e, false);
@@ -646,7 +509,9 @@
     window.addEventListener('DOMContentLoaded', () => {
       loadCurrentConfig();
       updateStatus();
-      loadNodes();
+      const topLink = document.getElementById('topZashboardLink');
+      if (topLink) topLink.href = getZashboardUrl();
+
       setInterval(updateStatus, 3000);
       setInterval(() => {
         const logsTab = document.getElementById('logsTab');
