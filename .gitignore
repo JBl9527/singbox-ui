@@ -1,0 +1,10 @@
+# 运行时数据与二进制忽略
+bin/
+data/
+*.tar.gz
+*.zip
+*.log
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
