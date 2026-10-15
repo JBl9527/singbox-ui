@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Sing-Box WebUI Dashboard
-轻量级、低功耗 CPU 友好型 Sing-box 管理面板与订阅处理器
-支持可视化节点选择 (Clash API & 本地配置双模切换)、全套专业策略组分流、测速与延迟高亮
+Sing-Box WebUI Dashboard (v1.14.3 全特性适配版)
+包含:
+- 多线程并发测速 (ThreadingHTTPServer)
+- 完整支持并标准化 AnyTLS / VLESS / Trojan / Shadowsocks / Hysteria2 等
+- 智能多格式订阅解析 (Sing-Box JSON / Base64单节点链接 / Clash YAML)
+- 1.14.3 自动化配置迁移与全维度 Sanitizer (移除旧DNS/Sniff/Block/DNS-out, 修复urltest default)
+- TUN 死循环防御 (强制 auto_detect_interface) 与 Clash API safe URL 编码
 """
 
 import os
@@ -11,6 +15,7 @@ import sys
 import json
 import time
 import shutil
+import base64
 import tarfile
 import urllib.request
 import urllib.parse
@@ -19,7 +24,7 @@ import platform
 import subprocess
 import threading
 import argparse
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from collections import deque
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -32,17 +37,21 @@ BIN_DIR = os.path.join(BASE_DIR, "bin")
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(BIN_DIR, exist_ok=True)
 
-# 内存日志缓冲队列（最多保存300条，轻量不占内存）
+# 内存日志缓冲队列（最多保存300条）
 LOG_BUFFER = deque(maxlen=300)
 
 def append_log(msg: str):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     LOG_BUFFER.append(f"[{timestamp}] {msg}")
 
+# 官方支持的合法代理出站类型 (包含 AnyTLS)
 VALID_PROXY_TYPES = {
     "anytls", "vless", "vmess", "shadowsocks", "trojan", "hysteria", "hysteria2",
     "tuic", "wireguard", "shadowtls", "tor", "ssh", "http", "socks"
 }
+
+# 绕过系统代理的直连 Opener (专门用于请求本地 Clash API 及直连测速)
+DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 def classify_nodes_by_region(nodes):
     """根据节点 tag 智能归类地区"""
@@ -61,21 +70,255 @@ def classify_nodes_by_region(nodes):
                 break
     return regions
 
-def sanitize_singbox_dict(cfg_dict):
-    """清理与修复配置，消除 1.14 废弃字段并保留合法的 anytls 节点"""
+def normalize_proxy_outbound(ob: dict) -> dict:
+    """标准化代理节点结构，尤其是 anytls 与 clash 遗留字段"""
+    if not isinstance(ob, dict):
+        return ob
+    otype = ob.get("type", "").lower()
+    ob["type"] = otype
+
+    # 标准化 server_port
+    if "port" in ob and "server_port" not in ob:
+        try:
+            ob["server_port"] = int(ob.pop("port"))
+        except Exception:
+            pass
+
+    # 处理 anytls 规范化
+    if otype == "anytls":
+        tls_cfg = ob.setdefault("tls", {})
+        tls_cfg["enabled"] = True
+
+        # 迁移顶层字段
+        if "sni" in ob:
+            tls_cfg["server_name"] = ob.pop("sni")
+        elif "server_name" in ob:
+            tls_cfg["server_name"] = ob.pop("server_name")
+        elif "server" in ob and "server_name" not in tls_cfg:
+            tls_cfg["server_name"] = ob["server"]
+
+        if "skip-cert-verify" in ob:
+            tls_cfg["insecure"] = bool(ob.pop("skip-cert-verify"))
+        elif "insecure" in ob:
+            tls_cfg["insecure"] = bool(ob.pop("insecure"))
+
+        if "client-fingerprint" in ob:
+            fp = ob.pop("client-fingerprint")
+            tls_cfg.setdefault("utls", {})["enabled"] = True
+            tls_cfg["utls"]["fingerprint"] = fp
+
+        if "alpn" in ob:
+            alpn = ob.pop("alpn")
+            if isinstance(alpn, str):
+                alpn = [x.strip() for x in alpn.split(",")]
+            tls_cfg["alpn"] = alpn
+
+        # 剔除 clash/其它多余字段
+        for bad_k in ["udp", "tfo", "skip-cert-verify", "client-fingerprint", "sni"]:
+            ob.pop(bad_k, None)
+
+    return ob
+
+def parse_node_uri(uri: str) -> dict:
+    """解析单节点链接 (anytls://, vless://, ss:// 等)"""
+    uri = uri.strip()
+    if not uri or "://" not in uri:
+        return None
+    scheme, rest = uri.split("://", 1)
+    scheme = scheme.lower()
+
+    if scheme == "anytls":
+        # anytls://password@server:port?sni=...#tag
+        tag = ""
+        if "#" in rest:
+            rest, tag = rest.split("#", 1)
+            tag = urllib.parse.unquote(tag)
+        query_params = {}
+        if "?" in rest:
+            rest, q = rest.split("?", 1)
+            query_params = urllib.parse.parse_qs(q)
+
+        user_info, host_port = rest.split("@", 1) if "@" in rest else ("", rest)
+        password = urllib.parse.unquote(user_info)
+        host, port = host_port.split(":", 1) if ":" in host_port else (host_port, "443")
+        
+        sni = query_params.get("sni", query_params.get("peer", [host]))[0]
+        insecure = query_params.get("insecure", query_params.get("allowInsecure", ["0"]))[0] in ["1", "true"]
+        fp = query_params.get("fp", ["chrome"])[0]
+
+        return normalize_proxy_outbound({
+            "type": "anytls",
+            "tag": tag or f"AnyTLS-{host}:{port}",
+            "server": host,
+            "server_port": int(port),
+            "password": password,
+            "tls": {
+                "enabled": True,
+                "server_name": sni,
+                "insecure": insecure,
+                "utls": {"enabled": True, "fingerprint": fp}
+            }
+        })
+
+    elif scheme in ["vless", "trojan", "hysteria2", "hy2"]:
+        # 通用 URI 解析
+        tag = ""
+        if "#" in rest:
+            rest, tag = rest.split("#", 1)
+            tag = urllib.parse.unquote(tag)
+        q_params = {}
+        if "?" in rest:
+            rest, q = rest.split("?", 1)
+            q_params = urllib.parse.parse_qs(q)
+        user_info, host_port = rest.split("@", 1) if "@" in rest else ("", rest)
+        host, port = host_port.split(":", 1) if ":" in host_port else (host_port, "443")
+
+        node_type = "hysteria2" if scheme in ["hysteria2", "hy2"] else scheme
+        node = {
+            "type": node_type,
+            "tag": tag or f"{node_type.upper()}-{host}:{port}",
+            "server": host,
+            "server_port": int(port)
+        }
+        if node_type == "vless":
+            node["uuid"] = user_info
+        else:
+            node["password"] = user_info
+
+        sni = q_params.get("sni", q_params.get("peer", [""]))[0]
+        if sni:
+            node.setdefault("tls", {})["enabled"] = True
+            node["tls"]["server_name"] = sni
+        return normalize_proxy_outbound(node)
+
+    return None
+
+def parse_subscription_payload(raw_data: str) -> list:
+    """多格式订阅解析器：支持 JSON / Base64 URI 列表 / Clash YAML"""
+    raw_data = raw_data.strip()
+    # 1. 尝试 JSON
+    if raw_data.startswith("{") and raw_data.endswith("}"):
+        try:
+            parsed = json.loads(raw_data)
+            if "outbounds" in parsed:
+                return [normalize_proxy_outbound(ob) for ob in parsed["outbounds"]]
+        except Exception:
+            pass
+
+    # 2. 尝试 Base64 解码
+    decoded_text = ""
+    try:
+        # 补全 padding
+        missing_padding = len(raw_data) % 4
+        padded = raw_data + ('=' * (4 - missing_padding)) if missing_padding else raw_data
+        decoded_bytes = base64.b64decode(padded)
+        decoded_text = decoded_bytes.decode("utf-8", errors="ignore")
+    except Exception:
+        pass
+
+    target_text = decoded_text if ("://" in decoded_text) else raw_data
+
+    # 3. 逐行解析 URI
+    nodes = []
+    for line in target_text.splitlines():
+        line = line.strip()
+        if "://" in line:
+            node = parse_node_uri(line)
+            if node:
+                nodes.append(node)
+
+    if nodes:
+        return nodes
+
+    # 4. 尝试简易提取 Clash YAML 中的 proxies
+    if "proxies:" in raw_data:
+        try:
+            import re
+            # 轻量正则提取 name, type, server, port, password/uuid 等
+            # 防止无 PyYAML 环境报错
+            clash_nodes = []
+            current_proxy = {}
+            for line in raw_data.splitlines():
+                line = line.strip()
+                if line.startswith("- name:") or line.startswith("- {name:"):
+                    if current_proxy and "type" in current_proxy:
+                        clash_nodes.append(normalize_proxy_outbound(current_proxy))
+                    current_proxy = {}
+                    m = re.search(r'name:\s*["\']?([^,"\']+)["\']?', line)
+                    if m: current_proxy["tag"] = m.group(1).strip()
+                elif current_proxy is not None:
+                    for k in ["type", "server", "port", "password", "uuid", "sni", "client-fingerprint"]:
+                        m = re.search(rf'^{k}:\s*["\']?([^,"\']+)["\']?', line)
+                        if m:
+                            current_proxy[k] = m.group(1).strip()
+            if current_proxy and "type" in current_proxy:
+                clash_nodes.append(normalize_proxy_outbound(current_proxy))
+            if clash_nodes:
+                return clash_nodes
+        except Exception:
+            pass
+
+    return []
+
+def sanitize_singbox_dict(cfg_dict: dict) -> dict:
+    """全自动迁移至 sing-box 1.14.3 规范，清除所有废弃结构与非法字段"""
     if not isinstance(cfg_dict, dict):
         return cfg_dict
 
-    # 1. 修复 sing-box 1.14+ 废弃的顶层 fakeip 和 independent_cache
-    if "dns" in cfg_dict and isinstance(cfg_dict["dns"], dict):
-        cfg_dict["dns"].pop("fakeip", None)
-        cfg_dict["dns"].pop("independent_cache", None)
-        # 移除已废弃的 outbound dns 匹配规则
-        if "rules" in cfg_dict["dns"] and isinstance(cfg_dict["dns"]["rules"], list):
-            cfg_dict["dns"]["rules"] = [r for r in cfg_dict["dns"]["rules"] if "outbound" not in r]
+    # 1. 迁移 experimental.cache_file
+    exp = cfg_dict.setdefault("experimental", {})
+    if "cache_file" in exp and isinstance(exp["cache_file"], dict):
+        if "store_rdrc" in exp["cache_file"]:
+            exp["cache_file"]["store_dns"] = exp["cache_file"].pop("store_rdrc")
 
-    # 2. 修复 TUN 1.10+ 地址写法并移除 1.14 废弃的 inbound sniff 字段
+    # 2. 迁移 DNS Server 为 1.14.0+ 的 type + server 标准格式，移除废弃顶层 fakeip/independent_cache
+    if "dns" in cfg_dict and isinstance(cfg_dict["dns"], dict):
+        dns = cfg_dict["dns"]
+        dns.pop("fakeip", None)
+        dns.pop("independent_cache", None)
+
+        migrated_servers = []
+        for s in dns.get("servers", []):
+            if not isinstance(s, dict):
+                continue
+            # 兼容处理旧 address 字段
+            if "address" in s:
+                addr = s.pop("address")
+                tag = s.get("tag", "")
+                if addr == "fakeip" or "fakeip" in tag:
+                    s["type"] = "fakeip"
+                    s.setdefault("inet4_range", "198.18.0.0/15")
+                elif addr == "local" or "local" in tag:
+                    s["type"] = "local"
+                    s["prefer_go"] = True
+                elif addr.startswith("https://"):
+                    s["type"] = "https"
+                    clean_server = addr.replace("https://", "").split("/")[0]
+                    s["server"] = clean_server
+                elif addr.startswith("rcode://"):
+                    continue # 1.14 废弃 rcode 地址
+                else:
+                    s["type"] = "udp"
+                    s["server"] = addr.split("/")[0]
+            migrated_servers.append(s)
+
+        # 确保存在直连 DNS (tag: ali 或 local)
+        has_direct_dns = any(s.get("tag") in ["ali", "local", "dns-direct"] for s in migrated_servers)
+        if not has_direct_dns:
+            migrated_servers.insert(0, {
+                "tag": "ali",
+                "type": "https",
+                "server": "223.5.5.5"
+            })
+        dns["servers"] = migrated_servers
+
+        # 净化 dns.rules (移除已废弃的 outbound 匹配规则)
+        if "rules" in dns and isinstance(dns["rules"], list):
+            dns["rules"] = [r for r in dns["rules"] if isinstance(r, dict) and "outbound" not in r]
+
+    # 3. 净化 Inbounds: 移除废弃的 sniff 字段，升级 tun address
     for ib in cfg_dict.get("inbounds", []):
+        if not isinstance(ib, dict): continue
         ib.pop("sniff", None)
         ib.pop("sniff_override_destination", None)
         if ib.get("type") == "tun":
@@ -86,55 +329,100 @@ def sanitize_singbox_dict(cfg_dict):
             if "inet6_address" in ib:
                 val6 = ib.pop("inet6_address")
                 if "address" in ib and isinstance(ib["address"], list):
-                    if isinstance(val6, list):
-                        ib["address"].extend(val6)
-                    else:
-                        ib["address"].append(val6)
+                    if isinstance(val6, list): ib["address"].extend(val6)
+                    else: ib["address"].append(val6)
 
-    # 3. 修复 1.14 废弃的 dns 出站，并收集所有有效节点 (完美支持 anytls)
+    # 4. 彻底移除 1.13+ 废弃的 block / dns 出站，标准化代理节点 (全面支持 anytls)
     valid_outbounds = []
     valid_tags = set()
-    skipped = []
 
     for ob in cfg_dict.get("outbounds", []):
+        if not isinstance(ob, dict): continue
         otype = ob.get("type", "").lower()
         tag = ob.get("tag", "")
-        # 1.14 彻底移除了 type == dns 的 outbound
-        if otype == "dns":
+
+        # 彻底移除废弃的 block 和 dns 出站
+        if otype in ["block", "dns"]:
             continue
-        if otype in ["direct", "block", "selector", "urltest", "fallback", "loadbalance"] or otype in VALID_PROXY_TYPES:
+
+        if otype in ["direct", "selector", "urltest", "fallback", "loadbalance"] or otype in VALID_PROXY_TYPES:
+            # 剥离 urltest 中非法的 default 字段！
+            if otype == "urltest":
+                ob.pop("default", None)
+            # 标准化节点参数
+            if otype in VALID_PROXY_TYPES:
+                ob = normalize_proxy_outbound(ob)
             valid_outbounds.append(ob)
             if tag:
                 valid_tags.add(tag)
-        else:
-            skipped.append(f"{tag}({otype})")
 
-    if skipped:
-        append_log(f"提示: 跳过未知出站类型: {', '.join(skipped[:5])}")
+    # 确保存在直连出站
+    if not any(ob.get("type") == "direct" for ob in valid_outbounds):
+        valid_outbounds.append({"tag": "直连", "type": "direct"})
+        valid_tags.add("直连")
 
-    # 4. 净化 selector / urltest 中的 outbounds 列表
+    # 净化 selector / urltest 的成员列表，并补齐未归组节点
+    core_groups = ["自动选择", "手动选择", "默认代理", "proxy"]
     for ob in valid_outbounds:
         otype = ob.get("type", "").lower()
         if otype in ["selector", "urltest", "fallback", "loadbalance"]:
             nodes = ob.get("outbounds", [])
-            clean_nodes = [n for n in nodes if n in valid_tags or n in ["direct", "block", "直连", "拒绝", "默认代理", "自动选择", "手动选择"]]
+            clean_nodes = [n for n in nodes if n in valid_tags or n in ["直连", "direct", "默认代理", "自动选择", "手动选择"]]
             if not clean_nodes:
                 clean_nodes = ["直连" if "直连" in valid_tags else "direct"]
             ob["outbounds"] = clean_nodes
-            if ob.get("default") and ob.get("default") not in clean_nodes:
-                ob["default"] = clean_nodes[0]
+            # selector 若 default 失效则重置为第一个节点
+            if otype == "selector":
+                if ob.get("default") and ob.get("default") not in clean_nodes:
+                    ob["default"] = clean_nodes[0]
+            else:
+                ob.pop("default", None) # 确保 urltest 绝无 default 字段
 
     cfg_dict["outbounds"] = valid_outbounds
 
-    # 5. 确保 1.14 route 中具备 default_domain_resolver
-    if "route" in cfg_dict and isinstance(cfg_dict["route"], dict):
-        if "default_domain_resolver" not in cfg_dict["route"]:
-            cfg_dict["route"]["default_domain_resolver"] = "ali"
+    # 5. 净化 Route: 移除对 block / dns-out 的引用，转换为 action: reject / hijack-dns
+    route = cfg_dict.setdefault("route", {})
+    route["auto_detect_interface"] = True # 强制开启，防止测速流量死循环！
 
+    # 动态匹配无代理的直连 DNS 解析器
+    direct_resolver_tag = "ali"
+    if "dns" in cfg_dict and "servers" in cfg_dict["dns"]:
+        for s in cfg_dict["dns"]["servers"]:
+            if "detour" not in s and s.get("type") in ["https", "udp", "local"]:
+                direct_resolver_tag = s.get("tag", "ali")
+                break
+    route["default_domain_resolver"] = direct_resolver_tag
+
+    migrated_rules = []
+    for r in route.get("rules", []):
+        if not isinstance(r, dict): continue
+        target_ob = r.get("outbound", "")
+
+        # 映射旧 block 为 action: reject
+        if target_ob in ["block", "拒绝"]:
+            r.pop("outbound", None)
+            r["action"] = "reject"
+        # 映射旧 dns-out 为 action: hijack-dns
+        elif target_ob in ["dns-out", "dns"] or r.get("protocol") == "dns":
+            r.pop("outbound", None)
+            r["action"] = "hijack-dns"
+        # 针对不存在的出站进行保底回退
+        elif target_ob and target_ob not in valid_tags:
+            r["outbound"] = "直连" if "直连" in valid_tags else "direct"
+
+        migrated_rules.append(r)
+
+    # 确保 DNS 劫持规则在首位
+    has_dns_hijack = any(r.get("action") == "hijack-dns" for r in migrated_rules)
+    if not has_dns_hijack:
+        migrated_rules.insert(0, {"protocol": "dns", "action": "hijack-dns"})
+        migrated_rules.insert(1, {"port": 53, "action": "hijack-dns"})
+
+    route["rules"] = migrated_rules
     return cfg_dict
 
-def sanitize_config_file(filepath):
-    """就地净化已有配置文件"""
+def sanitize_config_file(filepath: str):
+    """就地彻底净化配置文件"""
     if not os.path.exists(filepath):
         return
     try:
@@ -164,14 +452,10 @@ class SingBoxManager:
 
     def get_arch(self):
         m = platform.machine().lower()
-        if m in ["x86_64", "amd64"]:
-            return "amd64"
-        elif m in ["aarch64", "arm64"]:
-            return "arm64"
-        elif "armv7" in m or m == "arm":
-            return "armv7"
-        elif m in ["i386", "i686"]:
-            return "386"
+        if m in ["x86_64", "amd64"]: return "amd64"
+        elif m in ["aarch64", "arm64"]: return "arm64"
+        elif "armv7" in m or m == "arm": return "armv7"
+        elif m in ["i386", "i686"]: return "386"
         return m
 
     def check_version(self):
@@ -259,8 +543,16 @@ class SingBoxManager:
             else:
                 return False, "未找到可用配置文件，请先配置或保存"
 
-        # 启动前自动净化配置
+        # 启动前执行 1.14 规范自动迁移与就地净化
         sanitize_config_file(CONFIG_PATH)
+
+        # 预先检查语法
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            cfg_text = f.read()
+        ok, msg = self.validate_config(cfg_text)
+        if not ok:
+            append_log(f"启动拦截: 配置未通过验证:\n{msg}")
+            return False, msg
 
         try:
             cmd = [self.bin_path, "run", "-c", CONFIG_PATH]
@@ -273,6 +565,14 @@ class SingBoxManager:
             )
             self.start_time = time.time()
             append_log(f"Sing-Box 核心已启动 (PID: {self.process.pid})")
+
+            # 等待 0.4 秒确认内核进程是否存活，防止秒崩
+            time.sleep(0.4)
+            if self.process.poll() is not None:
+                err_out = self.process.stdout.read() if self.process.stdout else "未知错误退出"
+                append_log(f"内核异常退出:\n{err_out}")
+                self.process = None
+                return False, f"Sing-Box 启动即退出:\n{err_out}"
 
             def log_reader(proc):
                 try:
@@ -293,7 +593,6 @@ class SingBoxManager:
     def stop(self):
         if not self.is_running():
             return True, "服务当前未运行"
-
         try:
             pid = self.process.pid
             self.process.terminate()
@@ -316,42 +615,28 @@ class SingBoxManager:
     def download_kernel(self, custom_url=None):
         arch = self.get_arch()
         version = "1.14.3"
-        if not custom_url:
-            url = f"https://github.com/SagerNet/sing-box/releases/download/v{version}/sing-box-{version}-linux-{arch}.tar.gz"
-        else:
-            url = custom_url
+        url = custom_url or f"https://github.com/SagerNet/sing-box/releases/download/v{version}/sing-box-{version}-linux-{arch}.tar.gz"
 
         append_log(f"开始准备下载 sing-box 内核 ({arch})...")
         tar_path = os.path.join(DATA_DIR, f"sing-box-{arch}.tar.gz")
 
-        candidate_urls = [url]
-        if not custom_url:
-            candidate_urls = [
-                f"https://ghfast.top/{url}",
-                f"https://ghproxy.net/{url}",
-                url
-            ]
-
+        candidate_urls = [url] if custom_url else [f"https://ghfast.top/{url}", f"https://ghproxy.net/{url}", url]
         download_success = False
         last_error = ""
 
         for dl_url in candidate_urls:
             try:
                 append_log(f"尝试下载链接: {dl_url}")
-                req = urllib.request.Request(
-                    dl_url,
-                    headers={"User-Agent": "Mozilla/5.0 (compatible; SingBoxDashboard/1.0)"}
-                )
+                req = urllib.request.Request(dl_url, headers={"User-Agent": "Mozilla/5.0 (compatible; SingBoxDashboard/1.0)"})
                 with urllib.request.urlopen(req, timeout=25) as resp, open(tar_path, "wb") as f:
                     shutil.copyfileobj(resp, f)
                 download_success = True
                 break
             except Exception as e:
                 last_error = str(e)
-                append_log(f"此节点下载失败或超时，自动切换下一镜像...")
 
         if not download_success:
-            return False, f"下载内核失败 (所有镜像源均超时): {last_error}"
+            return False, f"下载内核失败: {last_error}"
 
         try:
             append_log("下载完成，正在解压内核...")
@@ -364,7 +649,6 @@ class SingBoxManager:
                             shutil.copyfileobj(f_in, f_out)
                         os.chmod(target_bin, 0o755)
                         break
-
             if os.path.exists(tar_path):
                 os.remove(tar_path)
 
@@ -373,9 +657,7 @@ class SingBoxManager:
             append_log(f"内核安装成功！当前版本: {ver}")
             return True, f"内核安装成功: {ver}"
         except Exception as e:
-            err = f"解压失败: {e}"
-            append_log(err)
-            return False, err
+            return False, f"解压失败: {e}"
 
     def get_clash_api_config(self):
         cfg_file = CONFIG_PATH if os.path.exists(CONFIG_PATH) else PRESET_PATH
@@ -400,7 +682,7 @@ class SingBoxManager:
                 req = urllib.request.Request(f"{controller}/proxies")
                 if secret:
                     req.add_header("Authorization", f"Bearer {secret}")
-                with urllib.request.urlopen(req, timeout=1.5) as resp:
+                with DIRECT_OPENER.open(req, timeout=1.5) as resp:
                     clash_data = json.loads(resp.read().decode("utf-8"))
                     proxies = clash_data.get("proxies", {})
                     groups = []
@@ -470,26 +752,28 @@ class SingBoxManager:
 
         if self.is_running() and controller:
             try:
-                put_url = f"{controller}/proxies/{urllib.parse.quote(group_name)}"
+                # 必须指定 safe=""，转义包含 / 的节点名字
+                put_url = f"{controller}/proxies/{urllib.parse.quote(group_name, safe='')}"
                 put_data = json.dumps({"name": node_name}).encode("utf-8")
                 req = urllib.request.Request(put_url, data=put_data, method="PUT")
                 req.add_header("Content-Type", "application/json")
                 if secret:
                     req.add_header("Authorization", f"Bearer {secret}")
-                with urllib.request.urlopen(req, timeout=2) as resp:
+                with DIRECT_OPENER.open(req, timeout=2) as resp:
                     if resp.status in [200, 204]:
                         switched_live = True
                         append_log(f"已动态切换出站组 [{group_name}] -> {node_name}")
             except Exception as e:
-                append_log(f"动态切换尝试未生效 ({e})，将持久化保存配置")
+                append_log(f"动态切换未生效 ({e})，将持久化更新配置文件")
 
+        # 仅针对 selector 持久化 default，绝不向 urltest 写入 default
         if os.path.exists(CONFIG_PATH):
             try:
                 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                     cfg = json.load(f)
                 updated = False
                 for ob in cfg.get("outbounds", []):
-                    if ob.get("tag") == group_name:
+                    if ob.get("tag") == group_name and ob.get("type") == "selector":
                         ob["default"] = node_name
                         updated = True
                         break
@@ -497,7 +781,7 @@ class SingBoxManager:
                     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                         json.dump(cfg, f, indent=2, ensure_ascii=False)
             except Exception as e:
-                append_log(f"持久化默认节点失败: {e}")
+                append_log(f"持久化默认节点异常: {e}")
 
         msg = f"节点已成功切换至: {node_name}"
         if not switched_live and self.is_running():
@@ -510,11 +794,14 @@ class SingBoxManager:
             return False, "需先启动 Sing-Box 核心方可进行在线测速"
 
         try:
-            url = f"{controller}/proxies/{urllib.parse.quote(node_name)}/delay?timeout=3000&url=http%3A%2F%2Fwww.gstatic.com%2Fgenerate_204"
+            # 必须 safe=""，防止斜杠被保留导致 404
+            encoded_node = urllib.parse.quote(node_name, safe="")
+            url = f"{controller}/proxies/{encoded_node}/delay?timeout=3000&url=http%3A%2F%2Fwww.gstatic.com%2Fgenerate_204"
             req = urllib.request.Request(url)
             if secret:
                 req.add_header("Authorization", f"Bearer {secret}")
-            with urllib.request.urlopen(req, timeout=4) as resp:
+            # 使用 DIRECT_OPENER 避免走外部代理干扰本地通信
+            with DIRECT_OPENER.open(req, timeout=4) as resp:
                 res = json.loads(resp.read().decode("utf-8"))
                 return True, res.get("delay", 0)
         except Exception:
@@ -609,7 +896,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
                 with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                     f.write(config_str)
-                append_log("配置文件已保存更新")
+                append_log("配置文件已保存并完成 1.14 规范自动迁移")
                 self._send_json({"success": True, "message": "配置保存成功"})
 
             elif self.path == "/api/nodes/select":
@@ -632,67 +919,69 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     return
 
                 append_log(f"正在获取订阅内容: {sub_url}")
+                # 仅传 sing-box，避免部分机场面板误判为 Clash 返回 YAML 导致格式混淆
                 req = urllib.request.Request(
                     sub_url,
-                    headers={"User-Agent": "sing-box/1.14.0; clash.meta; v2ray"}
+                    headers={"User-Agent": "sing-box/1.14.3"}
                 )
                 with urllib.request.urlopen(req, timeout=15) as resp:
                     raw_data = resp.read().decode("utf-8", errors="ignore")
 
-                final_config_str = ""
-                try:
-                    parsed_json = json.loads(raw_data)
-                    if "outbounds" in parsed_json:
-                        valid_external = [
-                            ob for ob in parsed_json.get("outbounds", [])
-                            if ob.get("type", "").lower() in VALID_PROXY_TYPES
-                        ]
-                        all_tags = [ob["tag"] for ob in valid_external if "tag" in ob]
-
-                        if use_preset:
-                            with open(PRESET_PATH, "r", encoding="utf-8") as f:
-                                preset = json.load(f)
-
-                            # 智能地区分流
-                            regions_map = classify_nodes_by_region(valid_external)
-                            region_tags_map = {
-                                "香港": regions_map["香港"]["nodes"],
-                                "日本": regions_map["日本"]["nodes"],
-                                "狮城": regions_map["狮城"]["nodes"],
-                                "美国": regions_map["美国"]["nodes"],
-                                "台湾": regions_map["台湾"]["nodes"],
-                            }
-
-                            for ob in preset.get("outbounds", []):
-                                tag = ob.get("tag", "")
-                                if tag == "自动选择":
-                                    ob["outbounds"] = all_tags if all_tags else ["直连"]
-                                elif tag == "手动选择":
-                                    ob["outbounds"] = all_tags if all_tags else ["直连"]
-                                elif tag.endswith("自动") or tag.endswith("手动"):
-                                    r_key = tag[:2]
-                                    if r_key in region_tags_map:
-                                        r_nodes = region_tags_map[r_key]
-                                        ob["outbounds"] = r_nodes if r_nodes else ["直连"]
-
-                            preset["outbounds"].extend(valid_external)
-                            final_config = sanitize_singbox_dict(preset)
-                            final_config_str = json.dumps(final_config, indent=2, ensure_ascii=False)
-                        else:
-                            final_config = sanitize_singbox_dict(parsed_json)
-                            final_config_str = json.dumps(final_config, indent=2, ensure_ascii=False)
-                except json.JSONDecodeError:
-                    self._send_json({"success": False, "message": "订阅内容不是合法的 JSON 格式"}, 400)
+                # 多格式智能解析器：支持 JSON / Base64单节点链接 / Clash YAML
+                extracted_nodes = parse_subscription_payload(raw_data)
+                if not extracted_nodes:
+                    self._send_json({"success": False, "message": "未能从订阅中识别出有效代理节点，请检查链接或格式"}, 400)
                     return
+
+                valid_external = [
+                    ob for ob in extracted_nodes
+                    if ob.get("type", "").lower() in VALID_PROXY_TYPES
+                ]
+                all_tags = [ob["tag"] for ob in valid_external if "tag" in ob]
+
+                if use_preset:
+                    with open(PRESET_PATH, "r", encoding="utf-8") as f:
+                        preset = json.load(f)
+
+                    # 智能地区归类
+                    regions_map = classify_nodes_by_region(valid_external)
+                    region_tags_map = {
+                        "香港": regions_map["香港"]["nodes"],
+                        "日本": regions_map["日本"]["nodes"],
+                        "狮城": regions_map["狮城"]["nodes"],
+                        "美国": regions_map["美国"]["nodes"],
+                        "台湾": regions_map["台湾"]["nodes"],
+                    }
+
+                    for ob in preset.get("outbounds", []):
+                        tag = ob.get("tag", "")
+                        if tag in ["自动选择", "手动选择"]:
+                            ob["outbounds"] = all_tags if all_tags else ["直连"]
+                        elif tag.endswith("自动") or tag.endswith("手动"):
+                            r_key = tag[:2]
+                            if r_key in region_tags_map:
+                                r_nodes = region_tags_map[r_key]
+                                ob["outbounds"] = r_nodes if r_nodes else ["直连"]
+
+                    preset["outbounds"].extend(valid_external)
+                    final_config = sanitize_singbox_dict(preset)
+                    final_config_str = json.dumps(final_config, indent=2, ensure_ascii=False)
+                else:
+                    final_config = sanitize_singbox_dict({"outbounds": valid_external})
+                    final_config_str = json.dumps(final_config, indent=2, ensure_ascii=False)
 
                 if os.path.exists(CONFIG_PATH):
                     shutil.copy(CONFIG_PATH, os.path.join(DATA_DIR, "config.json.bak"))
                 with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                     f.write(final_config_str)
 
-                append_log(f"订阅更新成功！已提取 {len(valid_external)} 个有效节点并智能注入各分流策略组。")
+                append_log(f"订阅更新成功！已载入 {len(valid_external)} 个节点 (含 AnyTLS 节点)。")
                 manager.restart()
-                self._send_json({"success": True, "message": f"订阅更新成功！已载入 {len(valid_external)} 个节点并生效。", "config": final_config_str})
+                self._send_json({
+                    "success": True,
+                    "message": f"订阅更新成功！已载入 {len(valid_external)} 个节点并完成 1.14.3 全自动校验与重载。",
+                    "config": final_config_str
+                })
 
             elif self.path == "/api/system/install_kernel":
                 data = self._read_body_json()
@@ -706,13 +995,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
 def run_server(port=9622):
     server_address = ("0.0.0.0", port)
-    httpd = HTTPServer(server_address, DashboardHandler)
-    append_log(f"Sing-Box WebUI 服务已启动，监听端口: {port}")
+    # 使用 ThreadingHTTPServer 解决多节点并发测速请求堵塞卡死问题！
+    httpd = ThreadingHTTPServer(server_address, DashboardHandler)
+    append_log(f"Sing-Box WebUI 服务已启动 (多线程引擎)，监听端口: {port}")
     print("=" * 60)
     print(f" Sing-Box WebUI 仪表盘启动成功！")
     print(f" 监听地址: http://0.0.0.0:{port}")
-    print(f" 本地访问: http://127.0.0.1:{port}")
-    print(" 极简低功耗设计，适用平台: amd64 / arm64 / armv7 等")
+    print(f" 多线程并发测速与 AnyTLS 完整支持已启用")
     print("=" * 60)
 
     def auto_start_kernel():
