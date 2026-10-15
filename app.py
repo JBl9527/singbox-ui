@@ -261,91 +261,211 @@ DEFAULT_PRESET_CONFIG = {
         {
             "type": "selector",
             "tag": "默认代理",
-            "outbounds": ["自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动", "直连"],
+            "outbounds": [
+                "自动选择",
+                "香港自动", "香港手动",
+                "日本自动", "日本手动",
+                "狮城自动", "狮城手动",
+                "美国自动", "美国手动",
+                "台湾自动", "台湾手动",
+                "直连"
+            ],
             "default": "自动选择"
         },
         {
             "type": "selector",
             "tag": "AI",
-            "outbounds": ["默认代理", "自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动", "直连"],
+            "outbounds": [
+                "默认代理", "自动选择",
+                "香港自动", "香港手动",
+                "日本自动", "日本手动",
+                "狮城自动", "狮城手动",
+                "美国自动", "美国手动",
+                "台湾自动", "台湾手动",
+                "直连"
+            ],
             "default": "默认代理"
         },
         {
             "type": "selector",
             "tag": "YouTube",
-            "outbounds": ["默认代理", "自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动", "直连"],
+            "outbounds": [
+                "默认代理", "自动选择",
+                "香港自动", "香港手动",
+                "日本自动", "日本手动",
+                "狮城自动", "狮城手动",
+                "美国自动", "美国手动",
+                "台湾自动", "台湾手动",
+                "直连"
+            ],
             "default": "默认代理"
         },
         {
             "type": "selector",
             "tag": "Google",
-            "outbounds": ["默认代理", "自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动", "直连"],
+            "outbounds": [
+                "默认代理", "自动选择",
+                "香港自动", "香港手动",
+                "日本自动", "日本手动",
+                "狮城自动", "狮城手动",
+                "美国自动", "美国手动",
+                "台湾自动", "台湾手动",
+                "直连"
+            ],
             "default": "默认代理"
         },
         {
             "type": "selector",
             "tag": "Github",
-            "outbounds": ["默认代理", "自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动", "直连"],
+            "outbounds": [
+                "默认代理", "自动选择",
+                "香港自动", "香港手动",
+                "日本自动", "日本手动",
+                "狮城自动", "狮城手动",
+                "美国自动", "美国手动",
+                "台湾自动", "台湾手动",
+                "直连"
+            ],
             "default": "默认代理"
         },
         {
             "type": "selector",
             "tag": "Telegram",
-            "outbounds": ["默认代理", "自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动", "直连"],
+            "outbounds": [
+                "默认代理", "自动选择",
+                "香港自动", "香港手动",
+                "日本自动", "日本手动",
+                "狮城自动", "狮城手动",
+                "美国自动", "美国手动",
+                "台湾自动", "台湾手动",
+                "直连"
+            ],
             "default": "默认代理"
         },
         {
             "type": "selector",
             "tag": "TikTok",
-            "outbounds": ["默认代理", "自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动", "直连"],
+            "outbounds": [
+                "默认代理", "自动选择",
+                "香港自动", "香港手动",
+                "日本自动", "日本手动",
+                "狮城自动", "狮城手动",
+                "美国自动", "美国手动",
+                "台湾自动", "台湾手动",
+                "直连"
+            ],
             "default": "默认代理"
         },
         {
             "type": "selector",
             "tag": "Netflix",
-            "outbounds": ["默认代理", "自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动", "直连"],
+            "outbounds": [
+                "默认代理", "自动选择",
+                "香港自动", "香港手动",
+                "日本自动", "日本手动",
+                "狮城自动", "狮城手动",
+                "美国自动", "美国手动",
+                "台湾自动", "台湾手动",
+                "直连"
+            ],
             "default": "默认代理"
         },
         {
             "type": "selector",
             "tag": "Steam",
-            "outbounds": ["默认代理", "自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动", "直连"],
+            "outbounds": [
+                "默认代理", "自动选择",
+                "香港自动", "香港手动",
+                "日本自动", "日本手动",
+                "狮城自动", "狮城手动",
+                "美国自动", "美国手动",
+                "台湾自动", "台湾手动",
+                "直连"
+            ],
             "default": "默认代理"
         },
         {
             "type": "selector",
             "tag": "OneDrive",
-            "outbounds": ["默认代理", "自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动", "直连"],
+            "outbounds": [
+                "默认代理", "自动选择",
+                "香港自动", "香港手动",
+                "日本自动", "日本手动",
+                "狮城自动", "狮城手动",
+                "美国自动", "美国手动",
+                "台湾自动", "台湾手动",
+                "直连"
+            ],
             "default": "默认代理"
         },
         {
             "type": "selector",
             "tag": "Microsoft",
-            "outbounds": ["默认代理", "自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动", "直连"],
+            "outbounds": [
+                "默认代理", "自动选择",
+                "香港自动", "香港手动",
+                "日本自动", "日本手动",
+                "狮城自动", "狮城手动",
+                "美国自动", "美国手动",
+                "台湾自动", "台湾手动",
+                "直连"
+            ],
             "default": "默认代理"
         },
         {
             "type": "selector",
             "tag": "Apple",
-            "outbounds": ["默认代理", "自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动", "直连"],
+            "outbounds": [
+                "默认代理", "自动选择",
+                "香港自动", "香港手动",
+                "日本自动", "日本手动",
+                "狮城自动", "狮城手动",
+                "美国自动", "美国手动",
+                "台湾自动", "台湾手动",
+                "直连"
+            ],
             "default": "默认代理"
         },
         {
             "type": "selector",
             "tag": "Emby",
-            "outbounds": ["默认代理", "自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动", "直连"],
+            "outbounds": [
+                "默认代理", "自动选择",
+                "香港自动", "香港手动",
+                "日本自动", "日本手动",
+                "狮城自动", "狮城手动",
+                "美国自动", "美国手动",
+                "台湾自动", "台湾手动",
+                "直连"
+            ],
             "default": "默认代理"
         },
         {
             "type": "selector",
             "tag": "Wallet",
-            "outbounds": ["默认代理", "自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动", "直连"],
+            "outbounds": [
+                "默认代理", "自动选择",
+                "香港自动", "香港手动",
+                "日本自动", "日本手动",
+                "狮城自动", "狮城手动",
+                "美国自动", "美国手动",
+                "台湾自动", "台湾手动",
+                "直连"
+            ],
             "default": "默认代理"
         },
         {
             "type": "selector",
             "tag": "漏网之鱼",
-            "outbounds": ["默认代理", "自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动", "直连"],
+            "outbounds": [
+                "默认代理", "自动选择",
+                "香港自动", "香港手动",
+                "日本自动", "日本手动",
+                "狮城自动", "狮城手动",
+                "美国自动", "美国手动",
+                "台湾自动", "台湾手动",
+                "直连"
+            ],
             "default": "默认代理"
         },
         {
@@ -1907,32 +2027,45 @@ def build_config_with_preset(valid_external_nodes: list):
         "AI", "YouTube", "Google", "Github", "Telegram", "TikTok",
         "Netflix", "Steam", "OneDrive", "Microsoft", "Apple", "Emby", "Wallet", "漏网之鱼"
     }
-    base_groups = ["自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动"]
+    # 每个业务分组里面只需要各个国家的自动和手动以及自动选择，节点全部去掉！
+    country_groups = [
+        "香港自动", "香港手动",
+        "日本自动", "日本手动",
+        "狮城自动", "狮城手动",
+        "美国自动", "美国手动",
+        "台湾自动", "台湾手动"
+    ]
+    sub_groups = ["自动选择"] + country_groups + ["直连"]
 
     for ob in preset["outbounds"]:
         tag = ob.get("tag", "")
-        if tag in ("自动选择", "手动选择"):
+        if tag == "自动选择":
+            # 自动选择：自动优选所有节点
             ob["outbounds"] = list(all_tags) if all_tags else ["直连"]
-            if ob.get("type") == "selector":
-                ob["default"] = ob["outbounds"][0]
+        elif tag == "手动选择":
+            # 手动选择：手动挑选所有节点
+            ob["outbounds"] = list(all_tags) if all_tags else ["直连"]
+            ob["default"] = ob["outbounds"][0]
         elif tag == "默认代理":
-            ob["outbounds"] = base_groups + list(all_tags) + ["直连"]
+            # 节点全部去掉，仅包含自动选择以及各个国家的自动与手动
+            ob["outbounds"] = list(sub_groups)
             ob["default"] = "自动选择"
         elif tag in app_groups:
-            ob["outbounds"] = ["默认代理"] + base_groups + list(all_tags) + ["直连"]
+            # 业务分组节点全部去掉，仅包含默认代理、自动选择以及各个国家的自动与手动
+            ob["outbounds"] = ["默认代理"] + list(sub_groups)
             ob["default"] = "默认代理"
         elif tag.endswith("自动"):
+            # 在各个国家自动下面才显示该国所有节点
             r_key = tag[:2]
-            if r_key in region_tags_map:
-                r_nodes = region_tags_map[r_key]
-                ob["outbounds"] = list(r_nodes) if r_nodes else ["直连"]
+            r_nodes = region_tags_map.get(r_key, [])
+            ob["outbounds"] = list(r_nodes) if r_nodes else ["直连"]
         elif tag.endswith("手动"):
+            # 在各个国家手动下面才显示该国所有节点
             r_key = tag[:2]
-            if r_key in region_tags_map:
-                r_nodes = region_tags_map[r_key]
-                ob["outbounds"] = list(r_nodes) if r_nodes else ["直连"]
-                if ob.get("type") == "selector":
-                    ob["default"] = ob["outbounds"][0]
+            r_nodes = region_tags_map.get(r_key, [])
+            ob["outbounds"] = list(r_nodes) if r_nodes else ["直连"]
+            if ob.get("type") == "selector":
+                ob["default"] = ob["outbounds"][0]
 
     preset["outbounds"].extend(dedup_nodes)
     return sanitize_singbox_dict(preset)
