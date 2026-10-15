@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Sing-Box WebUI Dashboard (sing-box 1.12 / 1.13 / 1.14+ & Sub-Store 全面兼容修复版)
+Sing-Box WebUI Dashboard (sing-box 1.12 / 1.13 / 1.14+ & Sub-Store & LXC 容器全面兼容修复版)
 轻量级、低功耗 CPU 友好型 Sing-box 管理面板与多格式订阅处理器
 核心修复:
-  1. 彻底解决 Sub-Store / Cloudflare 订阅拉取 500 报错:
+  1. 自动检测与修复 LXC / Docker 容器环境缺失 /dev/net/tun 导致启动崩溃:
+     - 启动前自动尝试加载 tun 模块并创建 /dev/net/tun 设备节点
+     - 若宿主机未映射 TUN 权限 (open /dev/net/tun 失败)，自动降级移除 tun 入站并清理 fakeip，
+       保留 Mixed (0.0.0.0:2080) 代理入站正常启动，绝不崩溃退出
+  2. 彻底解决 Sub-Store / Cloudflare 订阅拉取 500 报错:
      - 内置 curl (强制 IPv4 + 忽略自签证书 + 绕过系统死锁代理 + 公共 DNS 兜底解析) 与 Python 双引擎拉取
      - 智能识别 Sub-Store (/download/...) 链接，自动尝试 ?target=JSON / ClashMeta / URI / sing-box
      - API 异常统一返回 HTTP 200 + 明确中文错误提示，防止前端弹出笼统的 HTTP Error 500
-  2. 彻底解决 AnyTLS 节点不加载与格式报错:
+  3. 彻底解决 AnyTLS 节点不加载与全节点测速超时:
      - 支持 Sing-Box JSON、Sub-Store JSON、Clash/Mihomo YAML、Base64/明文 URI (anytls:// 等)
-     - 严格按照 sing-box 1.14 Schema 清洗节点字段 (剥离 subName/udp/tls:true 等非标属性)
-  3. 彻底解决 sing-box 1.14.3 无法启动与全节点测速超时:
-     - 启动时自动覆盖升级旧版 preset_config.json 并净化 data/config.json
-     - 升级为 ThreadingHTTPServer 多线程并发处理，消除批量测速阻塞
+     - 严格按照 sing-box 1.14 Schema 清洗节点字段，升级为 ThreadingHTTPServer 多线程并发测速
 """
 
 import os
@@ -67,6 +68,37 @@ def append_log(msg: str):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     LOG_BUFFER.append(f"[{timestamp}] {msg}")
 
+def ensure_tun_available() -> bool:
+    """
+    检测当前 Linux / 容器环境是否具备可用的 /dev/net/tun 设备。
+    若缺失则自动尝试 modprobe tun 与 mknod 创建设备节点；若因容器权限受限仍不可用则返回 False。
+    """
+    if os.name == "nt":
+        return True
+    tun_path = "/dev/net/tun"
+    if not os.path.exists(tun_path):
+        try:
+            subprocess.run(["modprobe", "tun"], capture_output=True, timeout=2)
+        except Exception:
+            pass
+        if not os.path.exists(tun_path):
+            try:
+                os.makedirs("/dev/net", exist_ok=True)
+                subprocess.run(["mknod", tun_path, "c", "10", "200"], capture_output=True, timeout=2)
+                os.chmod(tun_path, 0o666)
+            except Exception:
+                pass
+
+    if not os.path.exists(tun_path):
+        return False
+
+    try:
+        fd = os.open(tun_path, os.O_RDWR)
+        os.close(fd)
+        return True
+    except Exception:
+        return False
+
 VALID_PROXY_TYPES = {
     "anytls", "vless", "vmess", "shadowsocks", "trojan", "hysteria", "hysteria2",
     "tuic", "shadowtls", "naive", "snell", "tor", "ssh", "http", "socks"
@@ -77,7 +109,7 @@ TYPE_ALIASES = {
     "hy2": "hysteria2",
     "hysteria2": "hysteria2",
     "socks5": "socks",
-    " socks5+tls": "socks",
+    "socks5+tls": "socks",
     "http": "http",
     "https": "http",
 }
@@ -138,7 +170,7 @@ ALLOWED_OUTBOUND_FIELDS = {
     } | COMMON_DIAL_FIELDS,
 }
 
-# 内置 sing-box 1.14.3 标准预设模板（移除易卡死的远程 GitHub rule-set 与废弃字段）
+# 内置 sing-box 1.14.3 标准预设模板
 DEFAULT_PRESET_CONFIG = {
     "log": {
         "level": "info",
@@ -196,6 +228,7 @@ DEFAULT_PRESET_CONFIG = {
                 "server": "ali"
             },
             {
+                "inbound": ["tun-in"],
                 "query_type": ["A", "AAAA"],
                 "action": "route",
                 "server": "fakeip",
@@ -489,13 +522,14 @@ DEFAULT_PRESET_CONFIG = {
 }
 
 def load_preset_dict():
-    """始终使用并同步经过 sing-box 1.14.3 验证的预设模板，自动覆盖旧版含废弃字段的模板"""
+    """始终使用并同步经过 sing-box 1.14.3 验证的预设模板"""
+    preset_copy = sanitize_singbox_dict(json.loads(json.dumps(DEFAULT_PRESET_CONFIG)))
     try:
         with open(PRESET_PATH, "w", encoding="utf-8") as f:
-            json.dump(DEFAULT_PRESET_CONFIG, f, indent=2, ensure_ascii=False)
+            json.dump(preset_copy, f, indent=2, ensure_ascii=False)
     except Exception:
         pass
-    return json.loads(json.dumps(DEFAULT_PRESET_CONFIG))
+    return preset_copy
 
 def is_ip_address(val: str) -> bool:
     if not val:
@@ -588,9 +622,7 @@ def sanitize_tls_object(tls_in, server_host="", top_sni=None, top_insecure=None,
     return tls_obj
 
 def normalize_proxy_outbound(ob: dict):
-    """
-    标准化单个代理出站节点，兼容 Sing-Box JSON、Sub-Store JSON 与 Clash 字典格式
-    """
+    """标准化单个代理出站节点，兼容 Sing-Box JSON、Sub-Store JSON 与 Clash 字典格式"""
     if not isinstance(ob, dict):
         return None
 
@@ -602,7 +634,6 @@ def normalize_proxy_outbound(ob: dict):
     ob = dict(ob)
     ob["type"] = otype
 
-    # 兼容 Clash / Sub-Store 的 name 与 port 字段
     if "tag" not in ob and "name" in ob:
         ob["tag"] = str(ob.pop("name")).strip()
     else:
@@ -626,7 +657,6 @@ def normalize_proxy_outbound(ob: dict):
         return None
     ob["server"] = server_host
 
-    # 提取可能散落在顶层的 TLS / Transport 参数 (常见于 Sub-Store target=JSON 和 Clash)
     top_sni = ob.pop("sni", None) or ob.pop("servername", None) or ob.pop("server_name", None) or ob.pop("peer", None)
     top_insecure = ob.pop("skip-cert-verify", None)
     if top_insecure is None:
@@ -639,7 +669,6 @@ def normalize_proxy_outbound(ob: dict):
     top_fp = ob.pop("client-fingerprint", None) or ob.pop("fingerprint", None) or ob.pop("fp", None)
     raw_tls = ob.pop("tls", None)
 
-    # 处理 Clash / Sub-Store 传输层参数 (ws-opts / grpc-opts / reality-opts)
     raw_net = str(ob.pop("network", "") or "").strip().lower()
     ws_opts = ob.pop("ws-opts", None)
     grpc_opts = ob.pop("grpc-opts", None)
@@ -660,7 +689,6 @@ def normalize_proxy_outbound(ob: dict):
                 "service_name": str(grpc_opts.get("grpc-service-name") or grpc_opts.get("service_name") or "")
             }
 
-    # 针对不同协议修正专有字段
     if otype == "anytls":
         if not ob.get("password"):
             ob["password"] = str(ob.pop("uuid", "") or ob.pop("username", "") or "")
@@ -723,7 +751,7 @@ def normalize_proxy_outbound(ob: dict):
         if "packet-encoding" in ob and "packet_encoding" not in ob:
             ob["packet_encoding"] = ob.pop("packet-encoding")
 
-        need_tls = bool(raw_tls or isinstance(reality_opts, dict) or top_sni or otype == "vless" and ob.get("flow"))
+        need_tls = bool(raw_tls or isinstance(reality_opts, dict) or top_sni or (otype == "vless" and ob.get("flow")))
         tls_obj = sanitize_tls_object(
             raw_tls, server_host=server_host,
             top_sni=top_sni, top_insecure=top_insecure,
@@ -746,7 +774,6 @@ def normalize_proxy_outbound(ob: dict):
         if "password" in ob:
             ob["password"] = str(ob["password"])
 
-    # 按协议白名单剔除所有非 sing-box 字段 (如 Sub-Store 的 subName, id, resolved, udp 等)
     allowed_keys = ALLOWED_OUTBOUND_FIELDS.get(otype)
     if allowed_keys:
         for k in list(ob.keys()):
@@ -848,12 +875,76 @@ def migrate_legacy_dns_server(srv: dict, fakeip_cfg: dict):
 
     return s, None
 
-def sanitize_singbox_dict(cfg_dict):
-    """全面清理与修复配置，100% 适配 sing-box 1.12 / 1.13 / 1.14.3"""
+def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False):
+    """全面清理与修复配置，100% 适配 sing-box 1.12 / 1.13 / 1.14.3 及无 TUN 容器环境"""
     if not isinstance(cfg_dict, dict):
         return cfg_dict
 
-    # --- 1. 净化 Outbounds ---
+    tun_supported = False if force_disable_tun else ensure_tun_available()
+
+    # --- 1. 修复 Inbounds (根据容器 /dev/net/tun 可用性自动决定是否保留 TUN) ---
+    has_tun = False
+    tun_tags = set()
+    clean_inbounds = []
+
+    for ib in cfg_dict.get("inbounds", []):
+        if not isinstance(ib, dict):
+            continue
+        ib = dict(ib)
+        ib.pop("sniff", None)
+        ib.pop("sniff_override_destination", None)
+        ib.pop("sniff_timeout", None)
+        ib.pop("domain_strategy", None)
+        ib.pop("udp_fragment", None)
+
+        if ib.get("type") == "tun":
+            if not tun_supported:
+                continue
+            has_tun = True
+            ib_tag = ib.get("tag") or "tun-in"
+            ib["tag"] = ib_tag
+            tun_tags.add(ib_tag)
+            ib.pop("gso", None)
+            if "inet4_address" in ib:
+                val = ib.pop("inet4_address")
+                if "address" not in ib:
+                    ib["address"] = [val] if isinstance(val, str) else list(val)
+            if "inet6_address" in ib:
+                val6 = ib.pop("inet6_address")
+                ib.setdefault("address", [])
+                if isinstance(ib["address"], str):
+                    ib["address"] = [ib["address"]]
+                if isinstance(val6, list):
+                    ib["address"].extend(val6)
+                elif isinstance(val6, str):
+                    ib["address"].append(val6)
+            for old_k, new_k in (
+                ("inet4_route_address", "route_address"),
+                ("inet6_route_address", "route_address"),
+                ("inet4_route_exclude_address", "route_exclude_address"),
+                ("inet6_route_exclude_address", "route_exclude_address"),
+            ):
+                if old_k in ib:
+                    v = ib.pop(old_k)
+                    ib.setdefault(new_k, [])
+                    if isinstance(v, list):
+                        ib[new_k].extend(v)
+                    elif isinstance(v, str):
+                        ib[new_k].append(v)
+
+        clean_inbounds.append(ib)
+
+    if not clean_inbounds:
+        clean_inbounds.append({
+            "type": "mixed",
+            "tag": "mixed-in",
+            "listen": "0.0.0.0",
+            "listen_port": 2080
+        })
+
+    cfg_dict["inbounds"] = clean_inbounds
+
+    # --- 2. 净化 Outbounds ---
     valid_outbounds = []
     valid_tags = set()
     proxy_tags = []
@@ -981,7 +1072,7 @@ def sanitize_singbox_dict(cfg_dict):
         next((ob["tag"] for ob in valid_outbounds if ob.get("type") in ("selector", "urltest")), direct_tag)
     )
 
-    # --- 2. 修复 DNS 配置 (适配 1.14.0 严格校验) ---
+    # --- 3. 修复 DNS 配置 (适配 1.14.0 严格校验与无 TUN 模式) ---
     dns_cfg = cfg_dict.get("dns")
     if not isinstance(dns_cfg, dict):
         dns_cfg = json.loads(json.dumps(DEFAULT_PRESET_CONFIG["dns"]))
@@ -998,6 +1089,7 @@ def sanitize_singbox_dict(cfg_dict):
     new_servers = []
     dns_server_tags = set()
     removed_rcode_tags = set()
+    fakeip_server_tags = set()
     direct_dns_tag = None
 
     for srv in raw_servers:
@@ -1010,6 +1102,12 @@ def sanitize_singbox_dict(cfg_dict):
             if not stag:
                 stag = f"dns-{len(new_servers) + 1}"
                 migrated_srv["tag"] = stag
+            if migrated_srv.get("type") == "fakeip":
+                if not has_tun:
+                    # 无 TUN 模式下禁用 fakeip，防止返回 198.18.x.x 导致无法连接
+                    fakeip_server_tags.add(stag)
+                    continue
+                fakeip_server_tags.add(stag)
             if "detour" in migrated_srv and migrated_srv["detour"] not in valid_tags:
                 migrated_srv["detour"] = main_proxy_tag
             new_servers.append(migrated_srv)
@@ -1017,7 +1115,7 @@ def sanitize_singbox_dict(cfg_dict):
             if direct_dns_tag is None and migrated_srv.get("type") in ("udp", "tcp", "local") and not migrated_srv.get("detour"):
                 direct_dns_tag = stag
 
-    if fakeip_cfg.get("enabled") and not any(s.get("type") == "fakeip" for s in new_servers):
+    if has_tun and fakeip_cfg.get("enabled") and not any(s.get("type") == "fakeip" for s in new_servers):
         new_servers.append({
             "type": "fakeip",
             "tag": "fakeip",
@@ -1025,6 +1123,7 @@ def sanitize_singbox_dict(cfg_dict):
             "inet6_range": fakeip_cfg.get("inet6_range", "fc00::/18")
         })
         dns_server_tags.add("fakeip")
+        fakeip_server_tags.add("fakeip")
 
     if direct_dns_tag is None:
         direct_dns_tag = "ali" if "ali" not in dns_server_tags else "local-direct"
@@ -1045,7 +1144,6 @@ def sanitize_singbox_dict(cfg_dict):
 
     dns_cfg["servers"] = new_servers
 
-    # 净化 dns.rules (在 1.14 中，geoip 规则集或 ip_cidr 若与 query_type 共存且无 match_response 会直接拒绝启动)
     if "rules" in dns_cfg and isinstance(dns_cfg["rules"], list):
         clean_dns_rules = []
         for r in dns_cfg["rules"]:
@@ -1071,7 +1169,12 @@ def sanitize_singbox_dict(cfg_dict):
                             r.pop("rule_set", None)
 
             srv_target = r.get("server", "")
-            if srv_target in removed_rcode_tags or str(srv_target).startswith("rcode://"):
+            if srv_target in fakeip_server_tags:
+                if not has_tun:
+                    continue
+                # 有 TUN 时，确保 fakeip 规则仅作用于 tun 入站，避免污染内部解析和 mixed 代理
+                r["inbound"] = sorted(list(tun_tags))
+            elif srv_target in removed_rcode_tags or str(srv_target).startswith("rcode://"):
                 r.pop("server", None)
                 r["action"] = "reject"
             elif srv_target and srv_target not in dns_server_tags:
@@ -1082,49 +1185,9 @@ def sanitize_singbox_dict(cfg_dict):
                 clean_dns_rules.append(r)
         dns_cfg["rules"] = clean_dns_rules
 
-    if dns_cfg.get("final") not in dns_server_tags:
-        dns_cfg["final"] = direct_dns_tag
-
-    # --- 3. 修复 Inbounds ---
-    has_tun = False
-    for ib in cfg_dict.get("inbounds", []):
-        if not isinstance(ib, dict):
-            continue
-        ib.pop("sniff", None)
-        ib.pop("sniff_override_destination", None)
-        ib.pop("sniff_timeout", None)
-        ib.pop("domain_strategy", None)
-        ib.pop("udp_fragment", None)
-
-        if ib.get("type") == "tun":
-            has_tun = True
-            ib.pop("gso", None)
-            if "inet4_address" in ib:
-                val = ib.pop("inet4_address")
-                if "address" not in ib:
-                    ib["address"] = [val] if isinstance(val, str) else list(val)
-            if "inet6_address" in ib:
-                val6 = ib.pop("inet6_address")
-                ib.setdefault("address", [])
-                if isinstance(ib["address"], str):
-                    ib["address"] = [ib["address"]]
-                if isinstance(val6, list):
-                    ib["address"].extend(val6)
-                elif isinstance(val6, str):
-                    ib["address"].append(val6)
-            for old_k, new_k in (
-                ("inet4_route_address", "route_address"),
-                ("inet6_route_address", "route_address"),
-                ("inet4_route_exclude_address", "route_exclude_address"),
-                ("inet6_route_exclude_address", "route_exclude_address"),
-            ):
-                if old_k in ib:
-                    v = ib.pop(old_k)
-                    ib.setdefault(new_k, [])
-                    if isinstance(v, list):
-                        ib[new_k].extend(v)
-                    elif isinstance(v, str):
-                        ib[new_k].append(v)
+    if dns_cfg.get("final") not in dns_server_tags or dns_cfg.get("final") in fakeip_server_tags:
+        remote_tag = next((s["tag"] for s in new_servers if s.get("type") not in ("fakeip", "local") and s["tag"] != direct_dns_tag), direct_dns_tag)
+        dns_cfg["final"] = remote_tag
 
     # --- 4. 修复 Route ---
     route_cfg = cfg_dict.get("route")
@@ -1162,7 +1225,6 @@ def sanitize_singbox_dict(cfg_dict):
                 valid_rule_sets.add(rs["tag"])
         route_cfg["rule_set"] = clean_rs
 
-    # 若 dns.rules 中引用了不存在于 route.rule_set 的规则集，予以清理
     if "rules" in dns_cfg and isinstance(dns_cfg["rules"], list):
         final_dns_rules = []
         for r in dns_cfg["rules"]:
@@ -1255,14 +1317,14 @@ def sanitize_singbox_dict(cfg_dict):
 
     return cfg_dict
 
-def sanitize_config_file(filepath):
+def sanitize_config_file(filepath, force_disable_tun: bool = False):
     """就地净化已有配置文件"""
     if not os.path.exists(filepath):
         return
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
-        data = sanitize_singbox_dict(data)
+        data = sanitize_singbox_dict(data, force_disable_tun=force_disable_tun)
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     except Exception as e:
@@ -1293,7 +1355,6 @@ def normalize_url_string(raw_url: str) -> str:
     if userinfo:
         netloc_clean = f"{userinfo}@{netloc_clean}"
 
-    # 先 unquote 再 quote，避免对 %E8%89%AF 等已编码字符二次编码
     clean_path = urllib.parse.quote(urllib.parse.unquote(parsed.path), safe="/:@!$&'()*+,;=-._~")
     clean_query = urllib.parse.quote(urllib.parse.unquote(parsed.query), safe="=/:@!$&'()*+,;-._~?")
     return urllib.parse.urlunsplit((scheme, netloc_clean, clean_path, clean_query, ""))
@@ -1307,7 +1368,7 @@ def resolve_ipv4_via_public_dns(hostname: str) -> str:
             tid = random.randint(1, 65534)
             header = struct.pack(">HHHHHH", tid, 0x0100, 1, 0, 0, 0)
             qname = b"".join(len(p).to_bytes(1, "big") + p.encode("ascii") for p in hostname.strip(".").split(".")) + b"\x00"
-            question = qname + struct.pack(">HH", 1, 1)  # QTYPE=A, QCLASS=IN
+            question = qname + struct.pack(">HH", 1, 1)
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.settimeout(2.0)
             sock.sendto(header + question, (dns_ip, 53))
@@ -1317,7 +1378,7 @@ def resolve_ipv4_via_public_dns(hostname: str) -> str:
             idx = 12
             while idx < len(data) and data[idx] != 0:
                 idx += data[idx] + 1
-            idx += 5  # null byte + QTYPE + QCLASS
+            idx += 5
             for _ in range(ancount):
                 if idx >= len(data):
                     break
@@ -1337,86 +1398,45 @@ def resolve_ipv4_via_public_dns(hostname: str) -> str:
     return ""
 
 def http_fetch_single(url: str, ua: str, timeout: int = 15):
-    """
-    单次拉取 URL:
-      优先使用 curl (-4 强制 IPv4、-k 忽略自签证书、--noproxy '*' 绕过死锁环境变量代理)
-      剥离环境中的死锁系统代理 (http_proxy/https_proxy/all_proxy)；
-      若系统 DNS 解析失败则自动使用 223.5.5.5 公共 DNS 注入 --resolve 重试；
-      最后使用 Python DIRECT_OPENER 兜底。
-    """
+    """优先使用 curl (-4 强制 IPv4、-k 忽略自签证书、--noproxy '*')，失败时公共 DNS + Python 兜底"""
     norm_url = normalize_url_string(url)
     parsed = urllib.parse.urlsplit(norm_url)
     host = parsed.hostname or ""
     port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
     last_error = ""
 
-    # 清除任何可能因 sing-box 停止而残留的死锁系统代理环境变量
-    clean_env = os.environ.copy()
-    for k in ("http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
-        clean_env.pop(k, None)
-
     curl_bin = shutil.which("curl")
     if curl_bin:
         cmd = [
-            curl_bin, "-sSk", "-4", "--noproxy", "*",
+            curl_bin, "-fsSLk", "-4", "--noproxy", "*",
             "--connect-timeout", "8", "--max-time", str(timeout),
             "-A", ua,
             "-H", "Accept: */*",
-            "-w", "\n%{http_code}",
             norm_url
         ]
         try:
-            res = subprocess.run(cmd, env=clean_env, capture_output=True, timeout=timeout + 3)
+            res = subprocess.run(cmd, capture_output=True, timeout=timeout + 3)
             if res.returncode == 0 and res.stdout:
-                raw_str = res.stdout.decode("utf-8", errors="ignore")
-                if "\n" in raw_str:
-                    body, _, code_str = raw_str.rpartition("\n")
-                    code_str = code_str.strip()
-                    if code_str.isdigit():
-                        http_code = int(code_str)
-                        if http_code == 200 and body.strip():
-                            return body, None
-                        else:
-                            last_error = f"HTTP {http_code}"
-                    elif raw_str.strip():
-                        return raw_str, None
-                elif raw_str.strip():
-                    return raw_str, None
-
-            err_msg = res.stderr.decode("utf-8", errors="ignore").strip() if res.stderr else ""
-            if not last_error:
-                last_error = f"curl({res.returncode}): {err_msg}" if err_msg else f"curl({res.returncode})"
-
-            # 若常规请求失败且 host 为域名，尝试利用公共 UDP DNS 获取 IP 并以 --resolve 注入 curl 重试
-            if host and not is_ip_address(host):
+                return res.stdout.decode("utf-8", errors="ignore"), None
+            err_msg = res.stderr.decode("utf-8", errors="ignore").strip()
+            last_error = f"curl({res.returncode}): {err_msg}"
+            if res.returncode in (6, 7, 28) and host and not is_ip_address(host):
                 resolved_ip = resolve_ipv4_via_public_dns(host)
                 if resolved_ip:
                     cmd_resolve = [
-                        curl_bin, "-sSk", "-4", "--noproxy", "*",
+                        curl_bin, "-fsSLk", "-4", "--noproxy", "*",
                         "--connect-timeout", "8", "--max-time", str(timeout),
                         "--resolve", f"{host}:{port}:{resolved_ip}",
                         "-A", ua,
                         "-H", "Accept: */*",
-                        "-w", "\n%{http_code}",
                         norm_url
                     ]
-                    res2 = subprocess.run(cmd_resolve, env=clean_env, capture_output=True, timeout=timeout + 3)
+                    res2 = subprocess.run(cmd_resolve, capture_output=True, timeout=timeout + 3)
                     if res2.returncode == 0 and res2.stdout:
-                        raw_str2 = res2.stdout.decode("utf-8", errors="ignore")
-                        if "\n" in raw_str2:
-                            body2, _, code_str2 = raw_str2.rpartition("\n")
-                            code_str2 = code_str2.strip()
-                            if code_str2.isdigit():
-                                if int(code_str2) == 200 and body2.strip():
-                                    return body2, None
-                            elif raw_str2.strip():
-                                return raw_str2, None
-                        elif raw_str2.strip():
-                            return raw_str2, None
+                        return res2.stdout.decode("utf-8", errors="ignore"), None
         except Exception as e:
             last_error = f"curl异常: {e}"
 
-    # Python DIRECT_OPENER 兜底
     try:
         req = urllib.request.Request(
             norm_url,
@@ -1458,37 +1478,28 @@ def add_query_param(url: str, key: str, val: str) -> str:
     return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment))
 
 def fetch_and_parse_subscription(sub_url: str):
-    """
-    针对 Sub-Store 与各类机场面板的多策略智能订阅拉取器:
-      - 若检测到 Sub-Store (/download/ 或 /api/file/)，无论输入链接是否带 target，
-        优先追加 ?target=JSON (原样导出全部节点，100%保留 AnyTLS 且绕过易出错的内置模板转换)；
-        随后依次备用 ?target=ClashMeta、?target=URI、原始链接、?target=sing-box
-      - 自动选择包含 AnyTLS 节点或有效节点数最多的结果
-    """
+    """针对 Sub-Store 与各类机场面板的多策略智能订阅拉取器"""
     norm_url = normalize_url_string(sub_url)
     parsed = urllib.parse.urlsplit(norm_url)
     is_substore = "/download/" in parsed.path or "/api/file/" in parsed.path
+    has_target = "target=" in parsed.query.lower()
 
     attempts = []
-    if is_substore:
+    if is_substore and not has_target:
         attempts = [
             (add_query_param(norm_url, "target", "JSON"), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"),
             (add_query_param(norm_url, "target", "ClashMeta"), "mihomo/1.19.0"),
             (add_query_param(norm_url, "target", "URI"), "v2rayNG/1.8.23"),
-            (norm_url, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"),
             (norm_url, "v2rayNG/1.8.23"),
             (norm_url, "mihomo/1.19.0"),
-            (norm_url, "sing-box 1.14.3"),
             (add_query_param(norm_url, "target", "sing-box"), "sing-box 1.14.3"),
         ]
     else:
         attempts = [
-            (norm_url, "sing-box 1.14.3"),
             (norm_url, "mihomo/1.19.0"),
             (norm_url, "v2rayNG/1.8.23"),
             (norm_url, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"),
-            (add_query_param(norm_url, "target", "sing-box"), "sing-box 1.14.3"),
-            (add_query_param(norm_url, "target", "clash"), "mihomo/1.19.0"),
+            (norm_url, "sing-box 1.14.3"),
         ]
 
     best_full_cfg = None
@@ -1496,24 +1507,18 @@ def fetch_and_parse_subscription(sub_url: str):
     errors = []
 
     for target_url, ua in attempts:
-        short_ua = ua.split("/")[0].split(" ")[0]
-        append_log(f"尝试拉取订阅 ({short_ua}): {target_url[:75]}...")
         text, err = http_fetch_single(target_url, ua, timeout=15)
         if err or not text:
             if err:
-                errors.append(f"[{short_ua}] {err}")
-                append_log(f"拉取返回错误 ({short_ua}): {err}")
+                errors.append(f"[{ua.split('/')[0]}] {err}")
             continue
 
         full_cfg, nodes = parse_subscription_payload(text)
         if nodes:
-            anytls_cnt = sum(1 for n in nodes if n.get("type") == "anytls")
-            anytls_info = f" (含 {anytls_cnt} 个 AnyTLS)" if anytls_cnt else ""
-            append_log(f"成功提取 {len(nodes)} 个节点{anytls_info}")
+            has_anytls = any(n.get("type") == "anytls" for n in nodes)
             if len(nodes) > len(best_nodes):
                 best_full_cfg, best_nodes = full_cfg, nodes
-            # 若已经成功解析出包含 anytls 的节点列表，直接命中返回
-            if anytls_cnt > 0:
+            if has_anytls:
                 return full_cfg, nodes, None
         elif full_cfg and not best_full_cfg:
             best_full_cfg = full_cfg
@@ -1745,14 +1750,11 @@ def parse_proxy_uri(uri: str):
     return None
 
 def parse_subscription_payload(raw_text: str):
-    """
-    智能解析订阅响应内容，返回 (parsed_full_singbox_dict_or_None, valid_proxy_outbounds_list)
-    """
+    """智能解析订阅响应内容，返回 (parsed_full_singbox_dict_or_None, valid_proxy_outbounds_list)"""
     raw_text = raw_text.strip().lstrip("\ufeff")
     if not raw_text:
         return None, []
 
-    # 1. 尝试 JSON 解析 (兼容 Sing-Box JSON、Sub-Store ?target=JSON 节点数组、Clash JSON)
     try:
         parsed_json = json.loads(raw_text)
         if isinstance(parsed_json, dict):
@@ -1776,7 +1778,6 @@ def parse_subscription_payload(raw_text: str):
     except Exception:
         pass
 
-    # 2. 若不含明文协议头且不含 YAML proxies:，尝试 Base64 解码
     candidate_text = raw_text
     if "://" not in candidate_text and "proxies:" not in candidate_text:
         try:
@@ -1786,7 +1787,6 @@ def parse_subscription_payload(raw_text: str):
         except Exception:
             pass
 
-    # 3. 检查是否包含 URI 分享链接 (anytls://, vless:// 等)
     uri_scheme_pattern = re.compile(r"^(anytls|vless|vmess|trojan|ss|hysteria2|hy2|tuic|socks5?|http)://", re.I)
     lines = [l.strip() for l in candidate_text.splitlines() if l.strip()]
     uri_lines = [l for l in lines if uri_scheme_pattern.match(l)]
@@ -1806,7 +1806,6 @@ def parse_subscription_payload(raw_text: str):
         if nodes:
             return None, nodes
 
-    # 4. 轻量级解析 Clash / Mihomo YAML 中的 proxies 块
     if "proxies:" in candidate_text:
         nodes = []
         in_proxies = False
@@ -2037,6 +2036,31 @@ class SingBoxManager:
                     os.remove(temp_file)
         return True, "校验通过"
 
+    def _spawn_process(self):
+        cmd = [self.bin_path, "run", "-c", CONFIG_PATH]
+        self.process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
+        self.start_time = time.time()
+
+        def log_reader(proc):
+            try:
+                for line in proc.stdout:
+                    l = line.strip()
+                    if l:
+                        append_log(l)
+            except Exception:
+                pass
+
+        self._log_thread = threading.Thread(target=log_reader, args=(self.process,), daemon=True)
+        self._log_thread.start()
+        time.sleep(0.45)
+        return self.process.poll() is None
+
     def start(self):
         if self.is_running():
             return True, "服务已在运行中"
@@ -2062,38 +2086,23 @@ class SingBoxManager:
             pass
 
         try:
-            cmd = [self.bin_path, "run", "-c", CONFIG_PATH]
-            self.process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1
-            )
-            self.start_time = time.time()
+            if self._spawn_process():
+                append_log(f"Sing-Box 核心已启动 (PID: {self.process.pid})")
+                return True, "启动成功"
 
-            def log_reader(proc):
-                try:
-                    for line in proc.stdout:
-                        l = line.strip()
-                        if l:
-                            append_log(l)
-                except Exception:
-                    pass
+            # 检查是否因为容器内 TUN 设备权限不足 (如 open /dev/net/tun 或 operation not permitted) 导致退出
+            recent_logs = "\n".join(list(LOG_BUFFER)[-6:])
+            if "tun" in recent_logs.lower() or "/dev/net/tun" in recent_logs.lower():
+                append_log("检测到当前容器环境不支持创建 TUN 虚拟网卡，正在自动切换为 Mixed (0.0.0.0:2080) 模式重试启动...")
+                sanitize_config_file(CONFIG_PATH, force_disable_tun=True)
+                if self._spawn_process():
+                    append_log(f"Sing-Box 核心已通过 Mixed 代理模式成功启动 (PID: {self.process.pid}，端口: 2080)")
+                    return True, "启动成功 (当前容器未开启 TUN 设备，已自动降级为 Mixed 端口 2080 模式)"
 
-            self._log_thread = threading.Thread(target=log_reader, args=(self.process,), daemon=True)
-            self._log_thread.start()
-
-            time.sleep(0.4)
-            if self.process.poll() is not None:
-                recent_logs = "\n".join(list(LOG_BUFFER)[-5:])
-                self.process = None
-                self.start_time = None
-                append_log("Sing-Box 启动后立即退出，请检查日志。")
-                return False, f"启动失败，内核已退出:\n{recent_logs}"
-
-            append_log(f"Sing-Box 核心已启动 (PID: {self.process.pid})")
-            return True, "启动成功"
+            self.process = None
+            self.start_time = None
+            append_log("Sing-Box 启动后立即退出，请检查日志。")
+            return False, f"启动失败，内核已退出:\n{recent_logs}"
         except Exception as e:
             append_log(f"启动失败: {e}")
             return False, f"启动异常: {e}"
@@ -2514,11 +2523,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception as e:
             err_trace = traceback.format_exc()
             append_log(f"POST 处理异常: {e}\n{err_trace}")
-            # 统一返回 200 状态码，确保前端能解析 JSON 并展示真实错误原因而非 HTTP Error 500
             self._send_json({"success": False, "message": f"处理失败: {e}"})
 
 def run_server(port=9622):
-    # 启动时先同步写入兼容 1.14.3 的预设模板并净化现有 config.json
     load_preset_dict()
     if os.path.exists(CONFIG_PATH):
         sanitize_config_file(CONFIG_PATH)
@@ -2539,7 +2546,7 @@ def run_server(port=9622):
         if not manager.is_running():
             ok, msg = manager.start()
             if ok:
-                append_log("开箱自启机制: Sing-Box 核心代理已全自动启动！")
+                append_log(f"开箱自启机制: {msg}")
             else:
                 append_log(f"开箱自启机制: 等待配置或内核安装 ({msg})")
 
