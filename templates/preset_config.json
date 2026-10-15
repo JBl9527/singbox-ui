@@ -4,50 +4,68 @@
     "timestamp": true
   },
   "experimental": {
-    "clash_api": {
-      "external_controller": "127.0.0.1:9090",
-      "secret": ""
-    },
     "cache_file": {
       "enabled": true,
+      "path": "cache.db",
+      "store_fakeip": true,
       "store_dns": true
+    },
+    "clash_api": {
+      "external_controller": "0.0.0.0:9090",
+      "default_mode": "Rule"
     }
   },
   "dns": {
     "servers": [
       {
-        "tag": "local",
-        "type": "local",
-        "prefer_go": true
-      },
-      {
+        "type": "udp",
         "tag": "ali",
-        "type": "https",
-        "server": "223.5.5.5"
+        "server": "223.5.5.5",
+        "server_port": 53
       },
       {
-        "tag": "google",
+        "type": "local",
+        "tag": "local"
+      },
+      {
         "type": "https",
-        "server": "8.8.8.8",
+        "tag": "remote",
+        "server": "1.1.1.1",
+        "server_port": 443,
+        "path": "/dns-query",
+        "domain_resolver": "ali",
         "detour": "默认代理"
       },
       {
-        "tag": "fakeip",
         "type": "fakeip",
-        "inet4_range": "198.18.0.0/15"
+        "tag": "fakeip",
+        "inet4_range": "198.18.0.0/15",
+        "inet6_range": "fc00::/18"
       }
     ],
     "rules": [
       {
-        "clash_mode": "Direct",
-        "server": "ali"
-      },
-      {
-        "clash_mode": "Global",
-        "server": "google"
-      },
-      {
-        "rule_set": "geosite-cn",
+        "domain_suffix": [
+          ".cn",
+          ".baidu.com",
+          ".qq.com",
+          ".taobao.com",
+          ".tmall.com",
+          ".alicdn.com",
+          ".aliyun.com",
+          ".jd.com",
+          ".163.com",
+          ".126.com",
+          ".bilibili.com",
+          ".hdslb.com",
+          ".douyin.com",
+          ".weibo.com",
+          ".wechat.com",
+          ".weixin.qq.com",
+          ".mi.com",
+          ".xiaomi.com"
+        ],
+        "action": "route",
         "server": "ali"
       },
       {
@@ -55,11 +73,13 @@
           "A",
           "AAAA"
         ],
-        "server": "fakeip"
+        "action": "route",
+        "server": "fakeip",
+        "rewrite_ttl": 1
       }
     ],
-    "final": "google",
-    "strategy": "ipv4_only"
+    "final": "remote",
+    "strategy": "prefer_ipv4"
   },
   "inbounds": [
     {
@@ -75,6 +95,7 @@
       "address": [
         "172.19.0.1/30"
       ],
+      "mtu": 1400,
       "auto_route": true,
       "strict_route": false,
       "stack": "system"
@@ -82,255 +103,247 @@
   ],
   "outbounds": [
     {
-      "tag": "默认代理",
       "type": "selector",
+      "tag": "默认代理",
       "outbounds": [
         "自动选择",
         "手动选择",
         "香港自动",
-        "香港手动",
         "日本自动",
-        "日本手动",
         "狮城自动",
-        "狮城手动",
         "美国自动",
-        "美国手动",
         "台湾自动",
-        "台湾手动",
         "直连"
       ],
       "default": "自动选择"
     },
     {
+      "type": "selector",
       "tag": "AI",
-      "type": "selector",
       "outbounds": [
         "默认代理",
         "自动选择",
-        "美国自动",
-        "美国手动",
-        "日本自动",
-        "日本手动",
-        "狮城自动",
-        "狮城手动",
-        "台湾自动",
-        "台湾手动",
-        "香港自动",
-        "香港手动",
         "手动选择",
+        "香港自动",
+        "日本自动",
+        "狮城自动",
+        "美国自动",
+        "台湾自动",
         "直连"
       ],
       "default": "默认代理"
     },
     {
+      "type": "selector",
       "tag": "YouTube",
-      "type": "selector",
       "outbounds": [
         "默认代理",
         "自动选择",
-        "香港自动",
-        "香港手动",
-        "日本自动",
-        "日本手动",
-        "狮城自动",
-        "狮城手动",
-        "美国自动",
-        "美国手动",
-        "台湾自动",
-        "台湾手动",
         "手动选择",
+        "香港自动",
+        "日本自动",
+        "狮城自动",
+        "美国自动",
+        "台湾自动",
         "直连"
       ],
       "default": "默认代理"
     },
     {
+      "type": "selector",
       "tag": "Google",
-      "type": "selector",
       "outbounds": [
         "默认代理",
         "自动选择",
-        "香港自动",
-        "香港手动",
-        "日本自动",
-        "日本手动",
-        "狮城自动",
-        "狮城手动",
-        "美国自动",
-        "美国手动",
-        "台湾自动",
-        "台湾手动",
         "手动选择",
+        "香港自动",
+        "日本自动",
+        "狮城自动",
+        "美国自动",
+        "台湾自动",
         "直连"
       ],
       "default": "默认代理"
     },
     {
+      "type": "selector",
       "tag": "Github",
-      "type": "selector",
       "outbounds": [
         "默认代理",
         "自动选择",
-        "香港自动",
-        "香港手动",
-        "日本自动",
-        "日本手动",
-        "狮城自动",
-        "狮城手动",
-        "美国自动",
-        "美国手动",
         "手动选择",
+        "香港自动",
+        "日本自动",
+        "狮城自动",
+        "美国自动",
+        "台湾自动",
         "直连"
       ],
       "default": "默认代理"
     },
     {
+      "type": "selector",
       "tag": "Telegram",
-      "type": "selector",
       "outbounds": [
         "默认代理",
         "自动选择",
-        "狮城自动",
-        "狮城手动",
-        "香港自动",
-        "香港手动",
-        "日本自动",
-        "日本手动",
-        "美国自动",
-        "美国手动",
         "手动选择",
+        "香港自动",
+        "日本自动",
+        "狮城自动",
+        "美国自动",
+        "台湾自动",
         "直连"
       ],
       "default": "默认代理"
     },
     {
+      "type": "selector",
       "tag": "TikTok",
-      "type": "selector",
       "outbounds": [
         "默认代理",
         "自动选择",
+        "手动选择",
+        "香港自动",
         "日本自动",
-        "日本手动",
         "狮城自动",
-        "狮城手动",
         "美国自动",
-        "美国手动",
         "台湾自动",
-        "台湾手动",
-        "手动选择"
+        "直连"
       ],
       "default": "默认代理"
     },
     {
+      "type": "selector",
       "tag": "Netflix",
-      "type": "selector",
       "outbounds": [
         "默认代理",
         "自动选择",
-        "狮城自动",
-        "狮城手动",
-        "日本自动",
-        "日本手动",
+        "手动选择",
         "香港自动",
-        "香港手动",
-        "台湾自动",
-        "台湾手动",
+        "日本自动",
+        "狮城自动",
         "美国自动",
-        "美国手动",
-        "手动选择"
+        "台湾自动",
+        "直连"
       ],
       "default": "默认代理"
     },
     {
-      "tag": "Emby",
       "type": "selector",
-      "outbounds": [
-        "默认代理",
-        "直连",
-        "自动选择",
-        "香港自动",
-        "香港手动",
-        "日本自动",
-        "日本手动",
-        "狮城自动",
-        "狮城手动",
-        "美国自动",
-        "美国手动",
-        "台湾自动",
-        "台湾手动",
-        "手动选择"
-      ],
-      "default": "默认代理"
-    },
-    {
       "tag": "Steam",
-      "type": "selector",
       "outbounds": [
-        "直连",
         "默认代理",
         "自动选择",
+        "手动选择",
         "香港自动",
-        "香港手动",
         "日本自动",
-        "日本手动",
-        "手动选择"
-      ],
-      "default": "直连"
-    },
-    {
-      "tag": "Microsoft",
-      "type": "selector",
-      "outbounds": [
-        "直连",
-        "默认代理",
-        "自动选择",
-        "香港自动",
-        "香港手动",
+        "狮城自动",
         "美国自动",
-        "美国手动",
-        "手动选择"
-      ],
-      "default": "直连"
-    },
-    {
-      "tag": "OneDrive",
-      "type": "selector",
-      "outbounds": [
-        "直连",
-        "默认代理",
-        "自动选择",
-        "香港自动",
-        "香港手动",
-        "手动选择"
-      ],
-      "default": "直连"
-    },
-    {
-      "tag": "Apple",
-      "type": "selector",
-      "outbounds": [
-        "直连",
-        "默认代理",
-        "自动选择",
-        "香港自动",
-        "香港手动",
-        "手动选择"
-      ],
-      "default": "直连"
-    },
-    {
-      "tag": "漏网之鱼",
-      "type": "selector",
-      "outbounds": [
-        "默认代理",
-        "直连",
-        "自动选择",
-        "手动选择"
+        "台湾自动",
+        "直连"
       ],
       "default": "默认代理"
     },
     {
+      "type": "selector",
+      "tag": "OneDrive",
+      "outbounds": [
+        "默认代理",
+        "自动选择",
+        "手动选择",
+        "香港自动",
+        "日本自动",
+        "狮城自动",
+        "美国自动",
+        "台湾自动",
+        "直连"
+      ],
+      "default": "默认代理"
+    },
+    {
+      "type": "selector",
+      "tag": "Microsoft",
+      "outbounds": [
+        "默认代理",
+        "自动选择",
+        "手动选择",
+        "香港自动",
+        "日本自动",
+        "狮城自动",
+        "美国自动",
+        "台湾自动",
+        "直连"
+      ],
+      "default": "默认代理"
+    },
+    {
+      "type": "selector",
+      "tag": "Apple",
+      "outbounds": [
+        "默认代理",
+        "自动选择",
+        "手动选择",
+        "香港自动",
+        "日本自动",
+        "狮城自动",
+        "美国自动",
+        "台湾自动",
+        "直连"
+      ],
+      "default": "默认代理"
+    },
+    {
+      "type": "selector",
+      "tag": "Emby",
+      "outbounds": [
+        "默认代理",
+        "自动选择",
+        "手动选择",
+        "香港自动",
+        "日本自动",
+        "狮城自动",
+        "美国自动",
+        "台湾自动",
+        "直连"
+      ],
+      "default": "默认代理"
+    },
+    {
+      "type": "selector",
+      "tag": "Wallet",
+      "outbounds": [
+        "默认代理",
+        "自动选择",
+        "手动选择",
+        "香港自动",
+        "日本自动",
+        "狮城自动",
+        "美国自动",
+        "台湾自动",
+        "直连"
+      ],
+      "default": "默认代理"
+    },
+    {
+      "type": "selector",
+      "tag": "漏网之鱼",
+      "outbounds": [
+        "默认代理",
+        "自动选择",
+        "手动选择",
+        "香港自动",
+        "日本自动",
+        "狮城自动",
+        "美国自动",
+        "台湾自动",
+        "直连"
+      ],
+      "default": "默认代理"
+    },
+    {
+      "type": "urltest",
       "tag": "自动选择",
-      "type": "urltest",
       "outbounds": [
         "直连"
       ],
@@ -339,299 +352,271 @@
       "tolerance": 50
     },
     {
+      "type": "selector",
       "tag": "手动选择",
-      "type": "selector",
       "outbounds": [
         "直连"
       ],
       "default": "直连"
     },
     {
+      "type": "urltest",
       "tag": "香港自动",
-      "type": "urltest",
       "outbounds": [
         "直连"
       ],
       "url": "http://www.gstatic.com/generate_204",
-      "interval": "3m",
+      "interval": "5m",
       "tolerance": 50
     },
     {
+      "type": "selector",
       "tag": "香港手动",
-      "type": "selector",
       "outbounds": [
         "直连"
       ],
       "default": "直连"
     },
     {
+      "type": "urltest",
       "tag": "日本自动",
-      "type": "urltest",
       "outbounds": [
         "直连"
       ],
       "url": "http://www.gstatic.com/generate_204",
-      "interval": "3m",
+      "interval": "5m",
       "tolerance": 50
     },
     {
+      "type": "selector",
       "tag": "日本手动",
-      "type": "selector",
       "outbounds": [
         "直连"
       ],
       "default": "直连"
     },
     {
+      "type": "urltest",
       "tag": "狮城自动",
-      "type": "urltest",
       "outbounds": [
         "直连"
       ],
       "url": "http://www.gstatic.com/generate_204",
-      "interval": "3m",
+      "interval": "5m",
       "tolerance": 50
     },
     {
+      "type": "selector",
       "tag": "狮城手动",
-      "type": "selector",
       "outbounds": [
         "直连"
       ],
       "default": "直连"
     },
     {
+      "type": "urltest",
       "tag": "美国自动",
-      "type": "urltest",
       "outbounds": [
         "直连"
       ],
       "url": "http://www.gstatic.com/generate_204",
-      "interval": "3m",
+      "interval": "5m",
       "tolerance": 50
     },
     {
+      "type": "selector",
       "tag": "美国手动",
-      "type": "selector",
       "outbounds": [
         "直连"
       ],
       "default": "直连"
     },
     {
-      "tag": "台湾自动",
       "type": "urltest",
+      "tag": "台湾自动",
       "outbounds": [
         "直连"
       ],
       "url": "http://www.gstatic.com/generate_204",
-      "interval": "3m",
+      "interval": "5m",
       "tolerance": 50
     },
     {
-      "tag": "台湾手动",
       "type": "selector",
+      "tag": "台湾手动",
       "outbounds": [
         "直连"
       ],
       "default": "直连"
     },
     {
-      "tag": "直连",
-      "type": "direct"
+      "type": "direct",
+      "tag": "直连"
     }
   ],
   "route": {
     "auto_detect_interface": true,
     "default_domain_resolver": "ali",
+    "final": "漏网之鱼",
     "rules": [
+      {
+        "action": "sniff"
+      },
       {
         "protocol": "dns",
         "action": "hijack-dns"
-      },
-      {
-        "port": 53,
-        "action": "hijack-dns"
-      },
-      {
-        "clash_mode": "Direct",
-        "outbound": "直连"
-      },
-      {
-        "clash_mode": "Global",
-        "outbound": "默认代理"
       },
       {
         "ip_is_private": true,
         "outbound": "直连"
       },
       {
-        "rule_set": "geosite-category-ai-!cn",
+        "domain_suffix": [
+          "openai.com",
+          "chatgpt.com",
+          "anthropic.com",
+          "claude.ai",
+          "oaistatic.com",
+          "oaiusercontent.com",
+          "groq.com",
+          "mistral.ai",
+          "cohere.ai",
+          "perplexity.ai"
+        ],
         "outbound": "AI"
       },
       {
-        "rule_set": "geosite-youtube",
+        "domain_suffix": [
+          "youtube.com",
+          "googlevideo.com",
+          "ytimg.com",
+          "youtu.be"
+        ],
         "outbound": "YouTube"
       },
       {
-        "rule_set": "geosite-google",
+        "domain_suffix": [
+          "google.com",
+          "googleapis.com",
+          "gstatic.com",
+          "googleusercontent.com"
+        ],
         "outbound": "Google"
       },
       {
-        "rule_set": "geosite-github",
+        "domain_suffix": [
+          "github.com",
+          "githubassets.com",
+          "githubusercontent.com"
+        ],
         "outbound": "Github"
       },
       {
-        "rule_set": "geosite-telegram",
+        "domain_suffix": [
+          "telegram.org",
+          "t.me",
+          "telegra.ph",
+          "tdesktop.com"
+        ],
         "outbound": "Telegram"
       },
       {
-        "rule_set": "geosite-tiktok",
+        "domain_suffix": [
+          "tiktok.com",
+          "byteoversea.com",
+          "ibytedtos.com"
+        ],
         "outbound": "TikTok"
       },
       {
-        "rule_set": "geosite-netflix",
+        "domain_suffix": [
+          "netflix.com",
+          "nflxvideo.net",
+          "nflxext.com",
+          "nflxso.net"
+        ],
         "outbound": "Netflix"
       },
       {
-        "rule_set": "geosite-steam",
+        "domain_suffix": [
+          "steampowered.com",
+          "steamcommunity.com",
+          "steamgames.com",
+          "steamstatic.com"
+        ],
         "outbound": "Steam"
       },
       {
-        "rule_set": "geosite-onedrive",
+        "domain_suffix": [
+          "onedrive.live.com",
+          "1drv.ms",
+          "sharepoint.com"
+        ],
         "outbound": "OneDrive"
       },
       {
-        "rule_set": "geosite-microsoft@cn",
-        "outbound": "直连"
-      },
-      {
-        "rule_set": "geosite-microsoft",
+        "domain_suffix": [
+          "microsoft.com",
+          "live.com",
+          "office.com",
+          "azure.com",
+          "bing.com",
+          "msn.com"
+        ],
         "outbound": "Microsoft"
       },
       {
-        "rule_set": "geosite-apple@cn",
-        "outbound": "直连"
-      },
-      {
-        "rule_set": "geosite-apple",
+        "domain_suffix": [
+          "apple.com",
+          "icloud.com",
+          "aaplimg.com",
+          "apple-cloudkit.com"
+        ],
         "outbound": "Apple"
       },
       {
-        "rule_set": [
-          "geoip-cn",
-          "geosite-cn"
+        "domain_suffix": [
+          "as174.de",
+          "xmsl.org",
+          "69yun69.com",
+          "emby.wtf",
+          "embymv.link",
+          "gidd.tv",
+          "emby.moe"
+        ],
+        "outbound": "Emby"
+      },
+      {
+        "domain_suffix": [
+          "paypal.com",
+          "binance.com",
+          "okx.com"
+        ],
+        "outbound": "Wallet"
+      },
+      {
+        "domain_suffix": [
+          ".cn",
+          ".baidu.com",
+          ".qq.com",
+          ".taobao.com",
+          ".tmall.com",
+          ".alicdn.com",
+          ".aliyun.com",
+          ".jd.com",
+          ".163.com",
+          ".126.com",
+          ".bilibili.com",
+          ".hdslb.com",
+          ".douyin.com",
+          ".weibo.com",
+          ".wechat.com",
+          ".weixin.qq.com",
+          ".mi.com",
+          ".xiaomi.com"
         ],
         "outbound": "直连"
       }
-    ],
-    "rule_set": [
-      {
-        "tag": "geosite-category-ai-!cn",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ai-!cn.srs",
-        "download_detour": "默认代理"
-      },
-      {
-        "tag": "geosite-youtube",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-youtube.srs",
-        "download_detour": "默认代理"
-      },
-      {
-        "tag": "geosite-google",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-google.srs",
-        "download_detour": "默认代理"
-      },
-      {
-        "tag": "geosite-github",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-github.srs",
-        "download_detour": "默认代理"
-      },
-      {
-        "tag": "geosite-telegram",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-telegram.srs",
-        "download_detour": "默认代理"
-      },
-      {
-        "tag": "geosite-tiktok",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-tiktok.srs",
-        "download_detour": "默认代理"
-      },
-      {
-        "tag": "geosite-netflix",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-netflix.srs",
-        "download_detour": "默认代理"
-      },
-      {
-        "tag": "geosite-steam",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-steam.srs",
-        "download_detour": "默认代理"
-      },
-      {
-        "tag": "geosite-onedrive",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-onedrive.srs",
-        "download_detour": "默认代理"
-      },
-      {
-        "tag": "geosite-microsoft@cn",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-microsoft@cn.srs",
-        "download_detour": "直连"
-      },
-      {
-        "tag": "geosite-microsoft",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-microsoft.srs",
-        "download_detour": "默认代理"
-      },
-      {
-        "tag": "geosite-apple@cn",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-apple@cn.srs",
-        "download_detour": "直连"
-      },
-      {
-        "tag": "geosite-apple",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-apple.srs",
-        "download_detour": "默认代理"
-      },
-      {
-        "tag": "geoip-cn",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
-        "download_detour": "直连"
-      },
-      {
-        "tag": "geosite-cn",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
-        "download_detour": "直连"
-      }
-    ],
-    "final": "漏网之鱼"
+    ]
   }
 }
