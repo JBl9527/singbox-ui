@@ -131,18 +131,17 @@ if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
     fi
 fi
 
-# 3. 自动安装必要基础包 (Python3, curl, tar)
-echo -e "\n${BLUE}[2/6] 检查运行环境与基础组件...${NC}"
-if ! command -v python3 &> /dev/null || ! command -v curl &> /dev/null || ! command -v tar &> /dev/null; then
-    echo -e "${YELLOW}正在安装必要运行组件 (python3, curl, tar)...${NC}"
+echo -e "\n${BLUE}[2/6] 检查运行环境与基础组件 (含 iptables / nftables / iproute2)...${NC}"
+if ! command -v python3 &> /dev/null || ! command -v curl &> /dev/null || ! command -v tar &> /dev/null || ! command -v ip &> /dev/null; then
+    echo -e "${YELLOW}正在安装必要运行组件与底层网络工具...${NC}"
     if command -v apt-get &> /dev/null; then
-        apt-get update -y && apt-get install -y python3 curl tar ca-certificates
+        apt-get update -y && apt-get install -y python3 curl tar ca-certificates iptables nftables iproute2
     elif command -v yum &> /dev/null; then
-        yum install -y python3 curl tar ca-certificates
+        yum install -y python3 curl tar ca-certificates iptables nftables iproute
     elif command -v apk &> /dev/null; then
-        apk add --no-cache python3 curl tar ca-certificates
+        apk add --no-cache python3 curl tar ca-certificates iptables nftables iproute2
     elif command -v pacman &> /dev/null; then
-        pacman -Sy --noconfirm python tar curl ca-certificates
+        pacman -Sy --noconfirm python tar curl ca-certificates iptables nftables iproute2
     fi
 fi
 echo -e "${GREEN}✔ 基础环境检查完毕: $(python3 --version)${NC}"
@@ -281,7 +280,7 @@ elif command -v firewall-cmd &> /dev/null && systemctl is-active firewalld &> /d
     firewall-cmd --reload >/dev/null 2>&1 || true
 fi
 
-# iptables 底层转发与 NAT MASQUERADE 规则注入 (保障旁路由网关模式下局域网其他设备能够顺利转发)
+# iptables 底层转发、NAT MASQUERADE 与策略路由注入 (保障旁路由网关模式下局域网其他设备能够顺利转发)
 iptables -P FORWARD ACCEPT 2>/dev/null || true
 iptables -I FORWARD -j ACCEPT 2>/dev/null || true
 iptables -I FORWARD -i tun0 -j ACCEPT 2>/dev/null || true
@@ -294,9 +293,13 @@ fi
 PHYS_DEV=$(ip route show default 2>/dev/null | awk '/dev/ {for(i=1;i<=NF;i++) if($i=="dev" && $(i+1)!="tun0") print $(i+1)}' | head -n 1)
 if [ -n "$PHYS_DEV" ]; then
     iptables -t nat -C POSTROUTING -o "$PHYS_DEV" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o "$PHYS_DEV" -j MASQUERADE 2>/dev/null || true
+    # 策略路由: 确保来自物理网卡的局域网入站转发流量送入 table 2022 (tun0)
+    ip rule del iif "$PHYS_DEV" table 2022 2>/dev/null || true
+    ip rule add iif "$PHYS_DEV" table 2022 pref 15000 2>/dev/null || true
 fi
-iptables -t nat -C PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || true
-iptables -t nat -C PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || iptables -t nat -A PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || true
+# 强制将所有 53 端口 DNS 请求重定向至 172.19.0.1:53 (tun0 内核 hijack-dns)
+iptables -t nat -C PREROUTING -p udp --dport 53 -j DNAT --to-destination 172.19.0.1:53 2>/dev/null || iptables -t nat -I PREROUTING -p udp --dport 53 -j DNAT --to-destination 172.19.0.1:53 2>/dev/null || true
+iptables -t nat -C PREROUTING -p tcp --dport 53 -j DNAT --to-destination 172.19.0.1:53 2>/dev/null || iptables -t nat -I PREROUTING -p tcp --dport 53 -j DNAT --to-destination 172.19.0.1:53 2>/dev/null || true
 
 # 8. 注册 systemd 开机自启服务并立即启动
 echo -e "\n${BLUE}[6/6] 注册开机自启服务并启动所有组件...${NC}"

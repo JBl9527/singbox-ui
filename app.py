@@ -231,14 +231,21 @@ def configure_gateway_networking():
             if chk_nat.returncode != 0:
                 subprocess.run(["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", phys_dev, "-j", "MASQUERADE"], capture_output=True, timeout=2)
 
-        # 5. DNS 端口 53 转发兜底 (若客户端指定了公网 DNS，也强制重定向至本机 53 端口由 sing-box 劫持)
-        chk_dns_u = subprocess.run(["iptables", "-t", "nat", "-C", "PREROUTING", "-p", "udp", "--dport", "53", "-j", "REDIRECT", "--to-ports", "53"], capture_output=True, timeout=2)
-        if chk_dns_u.returncode != 0:
-            subprocess.run(["iptables", "-t", "nat", "-A", "PREROUTING", "-p", "udp", "--dport", "53", "-j", "REDIRECT", "--to-ports", "53"], capture_output=True, timeout=2)
+            # 5. 核心策略路由: 将物理网卡进入的所有局域网转发流量定向至 table 2022 (tun0)
+            # 无论客户端访问任何 IP，100% 捕获进 tun0 并呈现于 Zashboard
+            try:
+                chk_rule = subprocess.run(["ip", "rule", "show"], capture_output=True, text=True, timeout=2).stdout
+                if f"iif {phys_dev} lookup 2022" not in chk_rule:
+                    subprocess.run(["ip", "rule", "add", "iif", phys_dev, "table", "2022", "pref", "15000"], capture_output=True, timeout=2)
+            except Exception:
+                pass
 
-        chk_dns_t = subprocess.run(["iptables", "-t", "nat", "-C", "PREROUTING", "-p", "tcp", "--dport", "53", "-j", "REDIRECT", "--to-ports", "53"], capture_output=True, timeout=2)
-        if chk_dns_t.returncode != 0:
-            subprocess.run(["iptables", "-t", "nat", "-A", "PREROUTING", "-p", "tcp", "--dport", "53", "-j", "REDIRECT", "--to-ports", "53"], capture_output=True, timeout=2)
+        # 6. DNS 53 端口强制 DNAT 到 172.19.0.1:53 (tun0)
+        # 无论客户端 DNS 是写本机 IP 还是 8.8.8.8，强制直达 sing-box 内核 hijack-dns，彻底解决端口 53 拒绝访问问题
+        for proto in ("udp", "tcp"):
+            chk_dnat = subprocess.run(["iptables", "-t", "nat", "-C", "PREROUTING", "-p", proto, "--dport", "53", "-j", "DNAT", "--to-destination", "172.19.0.1:53"], capture_output=True, timeout=2)
+            if chk_dnat.returncode != 0:
+                subprocess.run(["iptables", "-t", "nat", "-I", "PREROUTING", "-p", proto, "--dport", "53", "-j", "DNAT", "--to-destination", "172.19.0.1:53"], capture_output=True, timeout=2)
     except Exception:
         pass
 
@@ -372,7 +379,7 @@ DEFAULT_PRESET_CONFIG = {
                 "server": "ali"
             },
             {
-                "inbound": ["tun-in", "dns-in"],
+                "inbound": ["tun-in"],
                 "query_type": ["A", "AAAA"],
                 "action": "route",
                 "server": "fakeip",
@@ -390,19 +397,14 @@ DEFAULT_PRESET_CONFIG = {
             "listen_port": 2080
         },
         {
-            "type": "direct",
-            "tag": "dns-in",
-            "listen": "0.0.0.0",
-            "listen_port": 53
-        },
-        {
             "type": "tun",
             "tag": "tun-in",
             "interface_name": "tun0",
             "address": ["172.19.0.1/30"],
             "mtu": 1500,
             "auto_route": True,
-            "strict_route": True,
+            "auto_redirect": True,
+            "strict_route": False,
             "stack": "mixed",
             "endpoint_independent_nat": True
         }
@@ -721,10 +723,6 @@ DEFAULT_PRESET_CONFIG = {
             },
             {
                 "port": 53,
-                "action": "hijack-dns"
-            },
-            {
-                "inbound": ["dns-in"],
                 "action": "hijack-dns"
             },
             {
@@ -1154,16 +1152,15 @@ def migrate_legacy_dns_server(srv: dict, fakeip_cfg: dict):
 
     return s, None
 
-def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False):
+def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disable_auto_redirect: bool = False):
     """全面清理与修复配置，100% 适配 sing-box 1.12 / 1.13 / 1.14.3 及无 TUN 容器环境"""
     if not isinstance(cfg_dict, dict):
         return cfg_dict
 
     tun_supported = False if force_disable_tun else ensure_tun_available()
 
-    # --- 1. 修复 Inbounds (根据容器 /dev/net/tun 可用性自动决定是否保留 TUN 与网关 DNS 监听) ---
+    # --- 1. 修复 Inbounds (根据系统环境自动配置 TUN 旁路由 auto_redirect 与转发) ---
     has_tun = False
-    has_dns_in = False
     tun_tags = set()
     clean_inbounds = []
 
@@ -1189,7 +1186,8 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False):
             tun_tags.add(ib_tag)
             ib.pop("gso", None)
             ib["auto_route"] = True
-            ib["strict_route"] = True
+            ib["auto_redirect"] = False if force_disable_auto_redirect else True
+            ib["strict_route"] = False
             ib["endpoint_independent_nat"] = True
             if ib.get("stack") not in ("mixed", "gvisor"):
                 ib["stack"] = "mixed"
@@ -1221,22 +1219,12 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False):
                         ib[new_k].extend(v)
                     elif isinstance(v, str):
                         ib[new_k].append(v)
+            clean_inbounds.append(ib)
         elif ib_type == "direct" and (ib.get("listen_port") == 53 or ib_tag == "dns-in"):
-            has_dns_in = True
-            ib["tag"] = "dns-in"
-            ib["listen"] = "0.0.0.0"
-            ib["listen_port"] = 53
-
-        clean_inbounds.append(ib)
-
-    # 旁路由与透明网关模式：当 TUN 支持时，自动注入 port 53 的 direct 监听 inbound，接收局域网设备直接发送的 DNS 查询
-    if tun_supported and not has_dns_in:
-        clean_inbounds.append({
-            "type": "direct",
-            "tag": "dns-in",
-            "listen": "0.0.0.0",
-            "listen_port": 53
-        })
+            # 旁路由模式下由 tun0 与 iptables DNAT 全权接管 53 端口，剔除重复的 direct 53 入站，避免端口占用与无法劫持
+            continue
+        else:
+            clean_inbounds.append(ib)
 
     if not clean_inbounds:
         clean_inbounds.append({
@@ -1476,8 +1464,8 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False):
             if srv_target in fakeip_server_tags:
                 if not has_tun:
                     continue
-                # 有 TUN 时，确保 fakeip 规则作用于 tun 入站和 dns 入站
-                r["inbound"] = sorted(list(tun_tags | {"dns-in"}))
+                # 有 TUN 时，确保 fakeip 规则作用于 tun 入站
+                r["inbound"] = sorted(list(tun_tags))
             elif srv_target in removed_rcode_tags or str(srv_target).startswith("rcode://"):
                 r.pop("server", None)
                 r["action"] = "reject"
@@ -1614,14 +1602,6 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False):
     if not has_port_53_hijack:
         clean_route_rules.insert(0, {"port": 53, "action": "hijack-dns"})
 
-    if has_tun or tun_supported:
-        has_dns_in_hijack = any(
-            r.get("action") == "hijack-dns" and "dns-in" in (r.get("inbound") if isinstance(r.get("inbound"), list) else [r.get("inbound")])
-            for r in clean_route_rules
-        )
-        if not has_dns_in_hijack:
-            clean_route_rules.insert(0, {"inbound": ["dns-in"], "action": "hijack-dns"})
-
     if not has_dns_hijack:
         clean_route_rules.insert(0, {"protocol": "dns", "action": "hijack-dns"})
     if not has_sniff_rule:
@@ -1653,14 +1633,14 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False):
 
     return cfg_dict
 
-def sanitize_config_file(filepath, force_disable_tun: bool = False):
+def sanitize_config_file(filepath, force_disable_tun: bool = False, force_disable_auto_redirect: bool = False):
     """就地净化已有配置文件"""
     if not os.path.exists(filepath):
         return
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
-        data = sanitize_singbox_dict(data, force_disable_tun=force_disable_tun)
+        data = sanitize_singbox_dict(data, force_disable_tun=force_disable_tun, force_disable_auto_redirect=force_disable_auto_redirect)
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     except Exception as e:
@@ -2442,8 +2422,17 @@ class SingBoxManager:
                 append_log(f"Sing-Box 核心已启动 (PID: {self.process.pid})")
                 return True, "启动成功"
 
-            # 检查是否因为容器内 TUN 设备权限不足 (如 open /dev/net/tun 或 operation not permitted) 导致退出
-            recent_logs = "\n".join(list(LOG_BUFFER)[-6:])
+            recent_logs = "\n".join(list(LOG_BUFFER)[-8:])
+
+            # 1. 检查是否因 auto_redirect 在缺少 nftables/netlink 的系统上报错
+            if "auto-redirect" in recent_logs.lower() or "nftables" in recent_logs.lower() or "netlink" in recent_logs.lower():
+                append_log("检测到当前系统不支持 nftables auto_redirect，正在自动降级为标准 TUN 策略路由模式重试...")
+                sanitize_config_file(CONFIG_PATH, force_disable_auto_redirect=True)
+                if self._spawn_process():
+                    append_log(f"Sing-Box 核心已通过标准 TUN 策略路由模式启动 (PID: {self.process.pid})")
+                    return True, "启动成功 (已降级为标准 TUN 策略路由模式)"
+
+            # 2. 检查是否因为容器内 TUN 设备权限不足 (如 open /dev/net/tun 或 operation not permitted) 导致退出
             if "tun" in recent_logs.lower() or "/dev/net/tun" in recent_logs.lower():
                 append_log("检测到当前容器环境不支持创建 TUN 虚拟网卡，正在自动切换为 Mixed (0.0.0.0:2080) 模式重试启动...")
                 sanitize_config_file(CONFIG_PATH, force_disable_tun=True)

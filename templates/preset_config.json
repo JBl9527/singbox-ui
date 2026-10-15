@@ -71,7 +71,6 @@
       },
       {
         "inbound": [
-          "dns-in",
           "tun-in"
         ],
         "query_type": [
@@ -94,12 +93,6 @@
       "listen_port": 2080
     },
     {
-      "type": "direct",
-      "tag": "dns-in",
-      "listen": "0.0.0.0",
-      "listen_port": 53
-    },
-    {
       "type": "tun",
       "tag": "tun-in",
       "interface_name": "tun0",
@@ -108,7 +101,8 @@
       ],
       "mtu": 1500,
       "auto_route": true,
-      "strict_route": true,
+      "auto_redirect": true,
+      "strict_route": false,
       "stack": "mixed",
       "endpoint_independent_nat": true
     }
@@ -540,13 +534,6 @@
       },
       {
         "port": 53,
-        "action": "hijack-dns",
-        "protocol": "dns"
-      },
-      {
-        "inbound": [
-          "dns-in"
-        ],
         "action": "hijack-dns",
         "protocol": "dns"
       },
