@@ -403,7 +403,6 @@ DEFAULT_PRESET_CONFIG = {
             "address": ["172.19.0.1/30"],
             "mtu": 1500,
             "auto_route": True,
-            "auto_redirect": True,
             "strict_route": False,
             "stack": "mixed",
             "endpoint_independent_nat": True
@@ -1186,7 +1185,7 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
             tun_tags.add(ib_tag)
             ib.pop("gso", None)
             ib["auto_route"] = True
-            ib["auto_redirect"] = False if force_disable_auto_redirect else True
+            ib.pop("auto_redirect", None)
             ib["strict_route"] = False
             ib["endpoint_independent_nat"] = True
             if ib.get("stack") not in ("mixed", "gvisor"):
@@ -1225,6 +1224,23 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
             continue
         else:
             clean_inbounds.append(ib)
+
+    # 核心保障: 只要系统支持 TUN (/dev/net/tun 可用)，若当前配置缺失 TUN 入站，则强制自动注入标准 tun0！
+    # 彻底杜绝此前因为历史配置被误清空 TUN 导致无法创建 tun0 网卡和 table 2022 的问题
+    if tun_supported and not has_tun:
+        clean_inbounds.append({
+            "type": "tun",
+            "tag": "tun-in",
+            "interface_name": "tun0",
+            "address": ["172.19.0.1/30"],
+            "mtu": 1500,
+            "auto_route": True,
+            "strict_route": False,
+            "stack": "mixed",
+            "endpoint_independent_nat": True
+        })
+        has_tun = True
+        tun_tags.add("tun-in")
 
     if not clean_inbounds:
         clean_inbounds.append({
@@ -2424,25 +2440,17 @@ class SingBoxManager:
 
             recent_logs = "\n".join(list(LOG_BUFFER)[-8:])
 
-            # 1. 检查是否因 auto_redirect 在缺少 nftables/netlink 的系统上报错
-            if "auto-redirect" in recent_logs.lower() or "nftables" in recent_logs.lower() or "netlink" in recent_logs.lower():
-                append_log("检测到当前系统不支持 nftables auto_redirect，正在自动降级为标准 TUN 策略路由模式重试...")
-                sanitize_config_file(CONFIG_PATH, force_disable_auto_redirect=True)
-                if self._spawn_process():
-                    append_log(f"Sing-Box 核心已通过标准 TUN 策略路由模式启动 (PID: {self.process.pid})")
-                    return True, "启动成功 (已降级为标准 TUN 策略路由模式)"
-
-            # 2. 检查是否因为容器内 TUN 设备权限不足 (如 open /dev/net/tun 或 operation not permitted) 导致退出
-            if "tun" in recent_logs.lower() or "/dev/net/tun" in recent_logs.lower():
-                append_log("检测到当前容器环境不支持创建 TUN 虚拟网卡，正在自动切换为 Mixed (0.0.0.0:2080) 模式重试启动...")
+            # 仅在当前确实受限于无特权容器且无法打开 /dev/net/tun 时，才降级为 Mixed 端口模式
+            if "/dev/net/tun" in recent_logs.lower() and ("permission denied" in recent_logs.lower() or "operation not permitted" in recent_logs.lower() or "no such file or directory" in recent_logs.lower()):
+                append_log("检测到当前环境无 /dev/net/tun 访问权限，正在自动切换为 Mixed (0.0.0.0:2080) 模式重试启动...")
                 sanitize_config_file(CONFIG_PATH, force_disable_tun=True)
                 if self._spawn_process():
                     append_log(f"Sing-Box 核心已通过 Mixed 代理模式成功启动 (PID: {self.process.pid}，端口: 2080)")
-                    return True, "启动成功 (当前容器未开启 TUN 设备，已自动降级为 Mixed 端口 2080 模式)"
+                    return True, "启动成功 (当前环境无 TUN 权限，已自动降级为 Mixed 模式)"
 
             self.process = None
             self.start_time = None
-            append_log("Sing-Box 启动后立即退出，请检查日志。")
+            append_log(f"Sing-Box 启动后退出:\n{recent_logs}")
             return False, f"启动失败，内核已退出:\n{recent_logs}"
         except Exception as e:
             append_log(f"启动失败: {e}")

@@ -243,6 +243,14 @@ if [ -f "$INSTALL_DIR/data/subscriptions.json" ]; then
     rm -f "$INSTALL_DIR/data/config.json" 2>/dev/null || true
 fi
 
+# 检查当前现有 config.json 是否损坏（如缺失 tun0 网卡），若是则立即从 templates/preset_config.json 纯净重构
+if [ -f "$INSTALL_DIR/data/config.json" ]; then
+    if ! grep -q '"interface_name": *"tun0"' "$INSTALL_DIR/data/config.json" 2>/dev/null; then
+        echo -e "${YELLOW}检测到现有 config.json 缺失 tun0 网卡配置，正在从预设模板自动重构修复...${NC}"
+        cp "$INSTALL_DIR/templates/preset_config.json" "$INSTALL_DIR/data/config.json"
+    fi
+fi
+
 # 若无配置文件则使用开箱预设模板初始化
 if [ ! -f "$INSTALL_DIR/data/config.json" ] && [ -f "$INSTALL_DIR/templates/preset_config.json" ]; then
     cp "$INSTALL_DIR/templates/preset_config.json" "$INSTALL_DIR/data/config.json"
@@ -324,6 +332,10 @@ EOF
 
 systemctl daemon-reload
 systemctl enable singbox-ui.service
+systemctl stop singbox-ui.service 2>/dev/null || true
+pkill -9 -f "sing-box run" 2>/dev/null || true
+pkill -9 -f "app.py --port" 2>/dev/null || true
+sleep 1
 systemctl restart singbox-ui.service
 
 # 等待服务就绪
