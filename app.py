@@ -3,7 +3,7 @@
 """
 Sing-Box WebUI Dashboard
 轻量级、低功耗 CPU 友好型 Sing-box 管理面板与订阅处理器
-支持可视化节点选择 (Clash API & 本地配置双模切换)、测速与延迟高亮
+支持可视化节点选择 (Clash API & 本地配置双模切换)、全套专业策略组分流、测速与延迟高亮
 """
 
 import os
@@ -35,10 +35,33 @@ os.makedirs(BIN_DIR, exist_ok=True)
 # 内存日志缓冲队列（最多保存300条，轻量不占内存）
 LOG_BUFFER = deque(maxlen=300)
 
+def append_log(msg: str):
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    LOG_BUFFER.append(f"[{timestamp}] {msg}")
+
 VALID_PROXY_TYPES = {
     "vless", "vmess", "shadowsocks", "trojan", "hysteria", "hysteria2",
     "tuic", "wireguard", "shadowtls", "tor", "ssh", "http", "socks"
 }
+
+def classify_nodes_by_region(nodes):
+    """根据节点 tag 智能归类地区"""
+    regions = {
+        "香港": {"keywords": ["hk", "hongkong", "hong kong", "香港", "🇭🇰"], "nodes": []},
+        "日本": {"keywords": ["jp", "japan", "日本", "东京", "大阪", "🇯🇵"], "nodes": []},
+        "狮城": {"keywords": ["sg", "singapore", "新加坡", "狮城", "🇸🇬"], "nodes": []},
+        "美国": {"keywords": ["us", "united states", "america", "美国", "洛杉矶", "圣何塞", "硅谷", "西雅图", "纽约", "🇺🇸", "🇺🇲"], "nodes": []},
+        "台湾": {"keywords": ["tw", "taiwan", "台湾", "台北", "🇹🇼"], "nodes": []},
+    }
+    for n in nodes:
+        tag_lower = n.get("tag", "").lower()
+        matched = False
+        for r_name, r_data in regions.items():
+            if any(k in tag_lower for k in r_data["keywords"]):
+                r_data["nodes"].append(n["tag"])
+                matched = True
+                break
+    return regions
 
 def sanitize_singbox_dict(cfg_dict):
     """清理与修复配置，消除废弃字段并剔除非标 outbound 类型如 anytls"""
@@ -83,9 +106,9 @@ def sanitize_singbox_dict(cfg_dict):
         otype = ob.get("type", "").lower()
         if otype in ["selector", "urltest", "fallback", "loadbalance"]:
             nodes = ob.get("outbounds", [])
-            clean_nodes = [n for n in nodes if n in valid_tags or n in ["direct", "block", "dns", "auto-fast"]]
+            clean_nodes = [n for n in nodes if n in valid_tags or n in ["direct", "block", "dns", "直连", "拒绝", "dns-out"]]
             if not clean_nodes:
-                clean_nodes = ["direct"]
+                clean_nodes = ["直连" if "直连" in valid_tags else "direct"]
             ob["outbounds"] = clean_nodes
             if ob.get("default") and ob.get("default") not in clean_nodes:
                 ob["default"] = clean_nodes[0]
@@ -114,11 +137,9 @@ class SingBoxManager:
         self._log_thread = None
 
     def _find_binary(self):
-        # 1. 检查本地 ./bin/sing-box
         local_bin = os.path.join(BIN_DIR, "sing-box" + (".exe" if os.name == "nt" else ""))
         if os.path.exists(local_bin) and os.access(local_bin, os.X_OK | os.F_OK):
             return local_bin
-        # 2. 检查系统 PATH
         sys_bin = shutil.which("sing-box")
         if sys_bin:
             return sys_bin
@@ -221,7 +242,7 @@ class SingBoxManager:
             else:
                 return False, "未找到可用配置文件，请先配置或保存"
 
-        # 启动前自动净化配置 (防止残留 anytls 或已弃用字段)
+        # 启动前自动净化配置
         sanitize_config_file(CONFIG_PATH)
 
         try:
@@ -335,16 +356,14 @@ class SingBoxManager:
             append_log(f"内核安装成功！当前版本: {ver}")
             return True, f"内核安装成功: {ver}"
         except Exception as e:
-            err = f"下载/解压失败: {e}"
+            err = f"解压失败: {e}"
             append_log(err)
             return False, err
 
-    # ---------- 节点选择与 Clash API 交互逻辑 ----------
     def get_clash_api_config(self):
-        """解析配置文件中 experimental.clash_api 的设置"""
         cfg_file = CONFIG_PATH if os.path.exists(CONFIG_PATH) else PRESET_PATH
         if not os.path.exists(cfg_file):
-            return None, ""
+            return "http://127.0.0.1:9090", ""
         try:
             with open(cfg_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -358,9 +377,7 @@ class SingBoxManager:
             return "http://127.0.0.1:9090", ""
 
     def get_proxies_data(self):
-        """获取所有策略组及节点信息，支持 Clash API 实时动态获取与本地配置回退"""
         controller, secret = self.get_clash_api_config()
-        # 1. 如果内核运行中，尝试向 clash_api 请求动态状态
         if self.is_running() and controller:
             try:
                 req = urllib.request.Request(f"{controller}/proxies")
@@ -369,7 +386,6 @@ class SingBoxManager:
                 with urllib.request.urlopen(req, timeout=1.5) as resp:
                     clash_data = json.loads(resp.read().decode("utf-8"))
                     proxies = clash_data.get("proxies", {})
-                    
                     groups = []
                     nodes_info = {}
 
@@ -383,7 +399,6 @@ class SingBoxManager:
                                 "all": item.get("all", [])
                             })
                         else:
-                            # 普通代理节点
                             delay = 0
                             history = item.get("history", [])
                             if history:
@@ -394,15 +409,10 @@ class SingBoxManager:
                             }
 
                     if groups:
-                        return {
-                            "source": "clash_api",
-                            "groups": groups,
-                            "nodes": nodes_info
-                        }
+                        return {"source": "clash_api", "groups": groups, "nodes": nodes_info}
             except Exception:
                 pass
 
-        # 2. 回退机制：从静态 config.json 中解析出策略组与节点
         cfg_file = CONFIG_PATH if os.path.exists(CONFIG_PATH) else PRESET_PATH
         if not os.path.exists(cfg_file):
             return {"source": "none", "groups": [], "nodes": {}}
@@ -427,26 +437,20 @@ class SingBoxManager:
                         "now": default_now,
                         "all": all_nodes
                     })
-                elif ob_type not in ["direct", "block", "dns"]:
+                elif ob_type not in ["direct", "block", "dns", "直连", "拒绝", "dns-out"]:
                     nodes_info[tag] = {
                         "type": ob_type,
                         "delay": 0
                     }
 
-            return {
-                "source": "config_file",
-                "groups": groups,
-                "nodes": nodes_info
-            }
+            return {"source": "config_file", "groups": groups, "nodes": nodes_info}
         except Exception as e:
             return {"source": "error", "message": str(e), "groups": [], "nodes": {}}
 
     def select_proxy(self, group_name: str, node_name: str):
-        """选择并切换指定策略组的节点"""
         controller, secret = self.get_clash_api_config()
         switched_live = False
 
-        # 1. 尝试通过 Clash API 动态秒切
         if self.is_running() and controller:
             try:
                 put_url = f"{controller}/proxies/{urllib.parse.quote(group_name)}"
@@ -460,9 +464,8 @@ class SingBoxManager:
                         switched_live = True
                         append_log(f"已动态切换出站组 [{group_name}] -> {node_name}")
             except Exception as e:
-                append_log(f"动态切换尝试未生效 ({e})，将持久化更新至配置文件")
+                append_log(f"动态切换尝试未生效 ({e})，将持久化保存配置")
 
-        # 2. 持久化更新到 config.json
         if os.path.exists(CONFIG_PATH):
             try:
                 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -485,7 +488,6 @@ class SingBoxManager:
         return True, msg
 
     def test_delay(self, node_name: str):
-        """测试指定节点延迟"""
         controller, secret = self.get_clash_api_config()
         if not (self.is_running() and controller):
             return False, "需先启动 Sing-Box 核心方可进行在线测速"
@@ -498,8 +500,8 @@ class SingBoxManager:
             with urllib.request.urlopen(req, timeout=4) as resp:
                 res = json.loads(resp.read().decode("utf-8"))
                 return True, res.get("delay", 0)
-        except Exception as e:
-            return False, f"超时/失败"
+        except Exception:
+            return False, "超时/失败"
 
 manager = SingBoxManager()
 
@@ -524,57 +526,57 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         return json.loads(body)
 
     def do_GET(self):
-        if self.path == "/api/status":
-            self._send_json(manager.get_status())
-        elif self.path == "/api/logs":
-            self._send_json(list(LOG_BUFFER))
-        elif self.path == "/api/config":
-            if os.path.exists(CONFIG_PATH):
-                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                    content = f.read()
-            elif os.path.exists(PRESET_PATH):
-                with open(PRESET_PATH, "r", encoding="utf-8") as f:
-                    content = f.read()
+        try:
+            if self.path == "/api/status":
+                self._send_json(manager.get_status())
+            elif self.path == "/api/logs":
+                self._send_json(list(LOG_BUFFER))
+            elif self.path == "/api/config":
+                cfg_path = CONFIG_PATH if os.path.exists(CONFIG_PATH) else PRESET_PATH
+                if os.path.exists(cfg_path):
+                    with open(cfg_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                else:
+                    content = "{}"
+                self._send_json({"config": content})
+            elif self.path == "/api/preset":
+                if os.path.exists(PRESET_PATH):
+                    with open(PRESET_PATH, "r", encoding="utf-8") as f:
+                        content = f.read()
+                else:
+                    content = "{}"
+                self._send_json({"preset": content})
+            elif self.path in ["/api/proxies", "/api/nodes"]:
+                self._send_json(manager.get_proxies_data())
+            elif self.path.startswith("/api/nodes/delay"):
+                query = urllib.parse.urlparse(self.path).query
+                params = urllib.parse.parse_qs(query)
+                node = params.get("node", [""])[0]
+                if not node:
+                    self._send_json({"success": False, "message": "参数 node 不能为空"}, 400)
+                    return
+                ok, val = manager.test_delay(node)
+                if ok:
+                    self._send_json({"success": True, "delay": val})
+                else:
+                    self._send_json({"success": False, "message": val}, 400)
             else:
-                content = "{}"
-            self._send_json({"config": content})
-        elif self.path == "/api/preset":
-            if os.path.exists(PRESET_PATH):
-                with open(PRESET_PATH, "r", encoding="utf-8") as f:
-                    content = f.read()
-            else:
-                content = "{}"
-            self._send_json({"preset": content})
-        elif self.path == "/api/proxies" or self.path == "/api/nodes":
-            # 获取策略组与节点列表
-            self._send_json(manager.get_proxies_data())
-        elif self.path.startswith("/api/nodes/delay"):
-            query = urllib.parse.urlparse(self.path).query
-            params = urllib.parse.parse_qs(query)
-            node = params.get("node", [""])[0]
-            if not node:
-                self._send_json({"success": False, "message": "参数 node 不能为空"}, 400)
-                return
-            ok, val = manager.test_delay(node)
-            if ok:
-                self._send_json({"success": True, "delay": val})
-            else:
-                self._send_json({"success": False, "message": val}, 400)
-        else:
-            super().do_GET()
+                super().do_GET()
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
 
     def do_POST(self):
-        if self.path == "/api/service/start":
-            ok, msg = manager.start()
-            self._send_json({"success": ok, "message": msg})
-        elif self.path == "/api/service/stop":
-            ok, msg = manager.stop()
-            self._send_json({"success": ok, "message": msg})
-        elif self.path == "/api/service/restart":
-            ok, msg = manager.restart()
-            self._send_json({"success": ok, "message": msg})
-        elif self.path == "/api/config/save":
-            try:
+        try:
+            if self.path == "/api/service/start":
+                ok, msg = manager.start()
+                self._send_json({"success": ok, "message": msg})
+            elif self.path == "/api/service/stop":
+                ok, msg = manager.stop()
+                self._send_json({"success": ok, "message": msg})
+            elif self.path == "/api/service/restart":
+                ok, msg = manager.restart()
+                self._send_json({"success": ok, "message": msg})
+            elif self.path == "/api/config/save":
                 data = self._read_body_json()
                 config_str = data.get("config", "")
                 parsed_cfg = json.loads(config_str)
@@ -592,21 +594,18 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     f.write(config_str)
                 append_log("配置文件已保存更新")
                 self._send_json({"success": True, "message": "配置保存成功"})
-            except Exception as e:
-                self._send_json({"success": False, "message": str(e)}, 500)
 
-        elif self.path == "/api/nodes/select":
-            data = self._read_body_json()
-            group = data.get("group", "")
-            node = data.get("node", "")
-            if not group or not node:
-                self._send_json({"success": False, "message": "group 和 node 不能为空"}, 400)
-                return
-            ok, msg = manager.select_proxy(group, node)
-            self._send_json({"success": ok, "message": msg})
+            elif self.path == "/api/nodes/select":
+                data = self._read_body_json()
+                group = data.get("group", "")
+                node = data.get("node", "")
+                if not group or not node:
+                    self._send_json({"success": False, "message": "group 和 node 不能为空"}, 400)
+                    return
+                ok, msg = manager.select_proxy(group, node)
+                self._send_json({"success": ok, "message": msg})
 
-        elif self.path == "/api/subscribe/import":
-            try:
+            elif self.path == "/api/subscribe/import":
                 data = self._read_body_json()
                 sub_url = data.get("url", "").strip()
                 use_preset = data.get("use_preset", True)
@@ -618,7 +617,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 append_log(f"正在获取订阅内容: {sub_url}")
                 req = urllib.request.Request(
                     sub_url,
-                    headers={"User-Agent": "sing-box/1.10.0; clash.meta; v2ray"}
+                    headers={"User-Agent": "sing-box/1.14.0; clash.meta; v2ray"}
                 )
                 with urllib.request.urlopen(req, timeout=15) as resp:
                     raw_data = resp.read().decode("utf-8", errors="ignore")
@@ -627,22 +626,37 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 try:
                     parsed_json = json.loads(raw_data)
                     if "outbounds" in parsed_json:
-                        # 严格提取官方支持的合法代理节点
                         valid_external = [
                             ob for ob in parsed_json.get("outbounds", [])
                             if ob.get("type", "").lower() in VALID_PROXY_TYPES
                         ]
-                        tags = [ob["tag"] for ob in valid_external if "tag" in ob]
+                        all_tags = [ob["tag"] for ob in valid_external if "tag" in ob]
 
                         if use_preset:
                             with open(PRESET_PATH, "r", encoding="utf-8") as f:
                                 preset = json.load(f)
 
+                            # 智能地区分流
+                            regions_map = classify_nodes_by_region(valid_external)
+                            region_tags_map = {
+                                "香港": regions_map["香港"]["nodes"],
+                                "日本": regions_map["日本"]["nodes"],
+                                "狮城": regions_map["狮城"]["nodes"],
+                                "美国": regions_map["美国"]["nodes"],
+                                "台湾": regions_map["台湾"]["nodes"],
+                            }
+
                             for ob in preset.get("outbounds", []):
-                                if ob.get("tag") == "auto-fast":
-                                    ob["outbounds"] = tags if tags else ["direct"]
-                                elif ob.get("tag") == "proxy":
-                                    ob["outbounds"] = (["auto-fast"] + tags + ["direct"]) if tags else ["auto-fast", "direct"]
+                                tag = ob.get("tag", "")
+                                if tag == "自动选择":
+                                    ob["outbounds"] = all_tags if all_tags else ["直连"]
+                                elif tag == "手动选择":
+                                    ob["outbounds"] = all_tags if all_tags else ["直连"]
+                                elif tag.endswith("自动") or tag.endswith("手动"):
+                                    r_key = tag[:2]
+                                    if r_key in region_tags_map:
+                                        r_nodes = region_tags_map[r_key]
+                                        ob["outbounds"] = r_nodes if r_nodes else ["直连"]
 
                             preset["outbounds"].extend(valid_external)
                             final_config = sanitize_singbox_dict(preset)
@@ -651,10 +665,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                             final_config = sanitize_singbox_dict(parsed_json)
                             final_config_str = json.dumps(final_config, indent=2, ensure_ascii=False)
                 except json.JSONDecodeError:
-                    self._send_json({
-                        "success": False,
-                        "message": "暂只支持返回标准 sing-box 节点格式的订阅链接。若为普通 Base64 或 Clash 订阅，请先通过外部转换器或直接粘贴导出后的 sing-box 配置。"
-                    }, 400)
+                    self._send_json({"success": False, "message": "订阅内容不是合法的 JSON 格式"}, 400)
                     return
 
                 if os.path.exists(CONFIG_PATH):
@@ -662,22 +673,19 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                     f.write(final_config_str)
 
-                append_log("订阅更新成功，已成功与预设模板融合生成配置，正在自动启动/重载内核...")
-                # 自动启动/重启内核，实现真正免操作开箱即用
+                append_log(f"订阅更新成功！已提取 {len(valid_external)} 个有效节点并智能注入各分流策略组。")
                 manager.restart()
-                self._send_json({"success": True, "message": "订阅已更新并自动生效！节点已就绪。", "config": final_config_str})
-            except Exception as e:
-                err_msg = f"订阅导入失败: {e}"
-                append_log(err_msg)
-                self._send_json({"success": False, "message": err_msg}, 500)
+                self._send_json({"success": True, "message": f"订阅更新成功！已载入 {len(valid_external)} 个节点并生效。", "config": final_config_str})
 
-        elif self.path == "/api/system/install_kernel":
-            data = self._read_body_json()
-            custom_url = data.get("url", None)
-            ok, msg = manager.download_kernel(custom_url)
-            self._send_json({"success": ok, "message": msg})
-        else:
-            self._send_json({"error": "Not Found"}, 404)
+            elif self.path == "/api/system/install_kernel":
+                data = self._read_body_json()
+                custom_url = data.get("url", None)
+                ok, msg = manager.download_kernel(custom_url)
+                self._send_json({"success": ok, "message": msg})
+            else:
+                self._send_json({"error": "Not Found"}, 404)
+        except Exception as e:
+            self._send_json({"success": False, "message": str(e)}, 500)
 
 def run_server(port=9622):
     server_address = ("0.0.0.0", port)
@@ -687,10 +695,9 @@ def run_server(port=9622):
     print(f" Sing-Box WebUI 仪表盘启动成功！")
     print(f" 监听地址: http://0.0.0.0:{port}")
     print(f" 本地访问: http://127.0.0.1:{port}")
-    print(" 极简低功耗设计，集成节点选择面板，适用平台: amd64 / arm64 / armv7 等")
+    print(" 极简低功耗设计，适用平台: amd64 / arm64 / armv7 等")
     print("=" * 60)
 
-    # 自动开箱自启内核 (如果已有配置或预设配置，则自动启动 sing-box 代理)
     def auto_start_kernel():
         time.sleep(1)
         if not manager.is_running():
