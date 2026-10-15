@@ -13,7 +13,20 @@
 
 ## ⚡ 一键极速安装（推荐）
 
-当你将此仓库推送到 GitHub（如 `https://github.com/你的用户名/singbox-ui`）后，在任何一台全新的 Linux 服务器上只需执行一行命令：
+### 🇨🇳 国内服务器极速安装（推荐国内机器使用）
+
+使用国内高速反代加速源，彻底解决 GitHub 连接超时与内核下载缓慢问题：
+
+```bash
+bash <(curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/JBl9527/singbox-ui/main/install.sh)
+```
+
+备用镜像（若上述镜像繁忙可用此项）：
+```bash
+bash <(curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/JBl9527/singbox-ui/main/install.sh)
+```
+
+### 🌍 海外 / 国际服务器直连安装
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/JBl9527/singbox-ui/main/install.sh)
@@ -83,9 +96,15 @@ singbox-ui/
 如果你需要从系统彻底清除该面板及内核，可以使用以下任一方式：
 
 ### 方式一：GitHub 远程一行命令卸载（无需进入目录）
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/JBl9527/singbox-ui/main/uninstall.sh)
-```
+
+- **🇨🇳 国内机器推荐：**
+  ```bash
+  bash <(curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/JBl9527/singbox-ui/main/uninstall.sh)
+  ```
+- **🌍 海外机器直连：**
+  ```bash
+  bash <(curl -fsSL https://raw.githubusercontent.com/JBl9527/singbox-ui/main/uninstall.sh)
+  ```
 
 ### 方式二：在已安装机器上本地运行
 ```bash

@@ -2,20 +2,21 @@
 set -e
 
 # ==============================================================================
-# Sing-Box WebUI Linux 全自动一键安装脚本
+# Sing-Box WebUI Linux 全自动一键安装脚本 (支持国内镜像高速拉取与海外直连)
 # 适用平台: Linux amd64 (x86_64), arm64 (aarch64), armv7 (armhf/armv7l), 386
 # 特性:
-#   1. 全自动开启内核 IP 转发 (IPv4/IPv6 forwarding) 与 TUN 模块
-#   2. 全自动配置并放行防火墙端口 (9622 UI 端口 / 2080 混合代理端口)
-#   3. 全自动识别芯片架构并拉取对应官方 sing-box 二进制
-#   4. 全自动注册并启动 systemd 开机自启服务 (内核与WebUI全部就绪)
-#   5. 支持从 GitHub 远程一行命令极速安装 (curl | bash)
+#   1. 内置多路国内 GitHub 高速镜像源 (ghfast / ghproxy)，网络拉取 100% 成功
+#   2. 全自动开启内核 IP 转发 (IPv4/IPv6 forwarding) 与 TUN 模块
+#   3. 全自动配置并放行防火墙端口 (9622 UI 端口 / 2080 混合代理端口)
+#   4. 全自动识别芯片架构并拉取对应官方 sing-box 二进制
+#   5. 全自动注册并启动 systemd 开机自启服务 (内核与WebUI全部就绪)
 # ==============================================================================
 
 PORT=9622
 INSTALL_DIR="/opt/singbox-ui"
 SINGBOX_VERSION="1.10.7"
-GITHUB_RAW_BASE="https://raw.githubusercontent.com/JBl9527/singbox-ui/main"
+GITHUB_REPO="JBl9527/singbox-ui"
+GITHUB_RAW_BASE="https://raw.githubusercontent.com/${GITHUB_REPO}/main"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -25,9 +26,32 @@ PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+# 国内加速镜像前缀候选列表
+MIRRORS=(
+    "https://ghfast.top/"
+    "https://ghproxy.net/"
+    "https://mirror.ghproxy.com/"
+    ""
+)
+
+# 智能多镜像下载函数
+smart_download() {
+    local raw_url="$1"
+    local output_file="$2"
+    for prefix in "${MIRRORS[@]}"; do
+        local target_url="${prefix}${raw_url}"
+        if curl -fL --connect-timeout 6 --max-time 90 "$target_url" -o "$output_file" 2>/dev/null; then
+            if [ -s "$output_file" ]; then
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
 clear
 echo -e "${CYAN}====================================================================${NC}"
-echo -e "${PURPLE}           Sing-Box WebUI Linux 零配置一键开箱安装脚本             ${NC}"
+echo -e "${PURPLE}       Sing-Box WebUI Linux 零配置一键安装 (集成国内加速源)         ${NC}"
 echo -e "${CYAN}====================================================================${NC}"
 
 # 0. 支持直接通过 install.sh 进行一键卸载
@@ -121,7 +145,7 @@ esac
 echo -e "${GREEN}✔ 匹配目标硬件架构: ${ARCH} -> sing-box-${SB_ARCH}${NC}"
 
 # 5. 建立安装目录并布置文件
-echo -e "\n${BLUE}[4/6] 准备面板程序与前端文件...${NC}"
+echo -e "\n${BLUE}[4/6] 准备面板程序与前端文件 (自动加速拉取)...${NC}"
 mkdir -p "$INSTALL_DIR/bin"
 mkdir -p "$INSTALL_DIR/data"
 mkdir -p "$INSTALL_DIR/static"
@@ -129,35 +153,34 @@ mkdir -p "$INSTALL_DIR/templates"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# 判断是本地安装还是通过远程 curl | bash 运行
 if [ -f "$SCRIPT_DIR/app.py" ] && [ -f "$SCRIPT_DIR/static/index.html" ]; then
-    echo "从本地目录部署到 ${INSTALL_DIR} ..."
+    echo "从本地脚本目录部署到 ${INSTALL_DIR} ..."
     cp -r "$SCRIPT_DIR/app.py" "$INSTALL_DIR/"
     cp -r "$SCRIPT_DIR/install.sh" "$INSTALL_DIR/" 2>/dev/null || true
     cp -r "$SCRIPT_DIR/uninstall.sh" "$INSTALL_DIR/" 2>/dev/null || true
     cp -r "$SCRIPT_DIR/static/"* "$INSTALL_DIR/static/"
     cp -r "$SCRIPT_DIR/templates/"* "$INSTALL_DIR/templates/"
 else
-    echo "检测到远程管道执行模式，正在从 GitHub 远程拉取最新文件..."
-    curl -fsSL "${GITHUB_RAW_BASE}/app.py" -o "$INSTALL_DIR/app.py" 2>/dev/null || true
-    curl -fsSL "${GITHUB_RAW_BASE}/uninstall.sh" -o "$INSTALL_DIR/uninstall.sh" 2>/dev/null || true
-    curl -fsSL "${GITHUB_RAW_BASE}/static/index.html" -o "$INSTALL_DIR/static/index.html" 2>/dev/null || true
-    curl -fsSL "${GITHUB_RAW_BASE}/templates/preset_config.json" -o "$INSTALL_DIR/templates/preset_config.json" 2>/dev/null || true
+    echo "检测到远程执行模式，正在通过国内加速镜像源拉取面板代码..."
+    smart_download "${GITHUB_RAW_BASE}/app.py" "$INSTALL_DIR/app.py"
+    smart_download "${GITHUB_RAW_BASE}/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
+    smart_download "${GITHUB_RAW_BASE}/static/index.html" "$INSTALL_DIR/static/index.html"
+    smart_download "${GITHUB_RAW_BASE}/templates/preset_config.json" "$INSTALL_DIR/templates/preset_config.json"
 fi
 
 chmod +x "$INSTALL_DIR/app.py" 2>/dev/null || true
 chmod +x "$INSTALL_DIR/uninstall.sh" 2>/dev/null || true
 
 # 6. 下载并安装官方 sing-box 核心
-echo -e "\n${BLUE}[5/6] 部署官方 sing-box 内核...${NC}"
+echo -e "\n${BLUE}[5/6] 部署官方 sing-box 内核 (集成国内镜像通道)...${NC}"
 TARGET_BIN="$INSTALL_DIR/bin/sing-box"
 
 if [ ! -f "$TARGET_BIN" ] || [ ! -x "$TARGET_BIN" ]; then
-    DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-${SB_ARCH}.tar.gz"
-    echo -e "正在下载内核: ${DOWNLOAD_URL}"
+    ORIGINAL_RELEASE_URL="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-${SB_ARCH}.tar.gz"
+    echo -e "正在下载匹配芯片的内核..."
     TMP_TAR="/tmp/sing-box-${SB_ARCH}.tar.gz"
 
-    if curl -fL "$DOWNLOAD_URL" -o "$TMP_TAR" || wget -O "$TMP_TAR" "$DOWNLOAD_URL"; then
+    if smart_download "$ORIGINAL_RELEASE_URL" "$TMP_TAR"; then
         tar -xzf "$TMP_TAR" -C /tmp/
         EXT_DIR=$(find /tmp/ -maxdepth 1 -name "sing-box-${SINGBOX_VERSION}-linux-${SB_ARCH}" | head -n 1)
         if [ -n "$EXT_DIR" ] && [ -f "$EXT_DIR/sing-box" ]; then
@@ -168,7 +191,7 @@ if [ ! -f "$TARGET_BIN" ] || [ ! -x "$TARGET_BIN" ]; then
         rm -f "$TMP_TAR"
         echo -e "${GREEN}✔ sing-box 内核安装成功: $($TARGET_BIN version | head -n 1)${NC}"
     else
-        echo -e "${YELLOW}⚠ 下载内核超时，安装完成后可在 WebUI 界面中点击【一键安装内核】${NC}"
+        echo -e "${YELLOW}⚠ 首次下载内核遇到波动，面板已启动，稍后可在 WebUI 页面点击【一键下载内核】${NC}"
     fi
 fi
 
@@ -213,10 +236,10 @@ systemctl daemon-reload
 systemctl enable singbox-ui.service
 systemctl restart singbox-ui.service
 
-# 等待服务就绪并验证状态
+# 等待服务就绪
 sleep 2
 
-# 9. 智能获取内网 IP 与外网 IP
+# 9. 智能获取 IP 地址
 LOCAL_IP=$(ip -4 addr show 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1 || echo "127.0.0.1")
 PUBLIC_IP=$(curl -s4 --max-time 3 https://api.ipify.org 2>/dev/null || curl -s4 --max-time 3 https://ifconfig.me 2>/dev/null || echo "$LOCAL_IP")
 

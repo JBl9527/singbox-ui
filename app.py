@@ -213,17 +213,39 @@ class SingBoxManager:
         else:
             url = custom_url
 
-        append_log(f"开始下载 sing-box 内核 ({arch}): {url}")
+        append_log(f"开始准备下载 sing-box 内核 ({arch})...")
         tar_path = os.path.join(DATA_DIR, f"sing-box-{arch}.tar.gz")
 
-        try:
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; SingBoxDashboard/1.0)"}
-            )
-            with urllib.request.urlopen(req, timeout=30) as resp, open(tar_path, "wb") as f:
-                shutil.copyfileobj(resp, f)
+        candidate_urls = [url]
+        if not custom_url:
+            candidate_urls = [
+                f"https://ghfast.top/{url}",
+                f"https://ghproxy.net/{url}",
+                url
+            ]
 
+        download_success = False
+        last_error = ""
+
+        for dl_url in candidate_urls:
+            try:
+                append_log(f"尝试下载链接: {dl_url}")
+                req = urllib.request.Request(
+                    dl_url,
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; SingBoxDashboard/1.0)"}
+                )
+                with urllib.request.urlopen(req, timeout=25) as resp, open(tar_path, "wb") as f:
+                    shutil.copyfileobj(resp, f)
+                download_success = True
+                break
+            except Exception as e:
+                last_error = str(e)
+                append_log(f"此节点下载失败或超时，自动切换下一镜像...")
+
+        if not download_success:
+            return False, f"下载内核失败 (所有镜像源均超时): {last_error}"
+
+        try:
             append_log("下载完成，正在解压内核...")
             with tarfile.open(tar_path, "r:gz") as tar:
                 for member in tar.getmembers():
