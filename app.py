@@ -49,6 +49,7 @@ CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 PRESET_PATH = os.path.join(BASE_DIR, "templates", "preset_config.json")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 BIN_DIR = os.path.join(BASE_DIR, "bin")
+SUBS_PATH = os.path.join(DATA_DIR, "subscriptions.json")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(BIN_DIR, exist_ok=True)
@@ -67,6 +68,66 @@ DIRECT_OPENER = urllib.request.build_opener(
 def append_log(msg: str):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     LOG_BUFFER.append(f"[{timestamp}] {msg}")
+
+def remove_singbox_cache() -> int:
+    """
+    深度彻底清除 sing-box 产生的所有 SQLite 缓存数据库 (cache.db, cache.db-wal, cache.db-shm, cache.db-journal 等)
+    彻底杜绝 Clash API 历史残留节点、DNS 缓存污染与 Fake-IP 映射死锁。
+    """
+    targets = [
+        DATA_DIR,
+        BASE_DIR,
+        os.getcwd(),
+        "/opt/singbox-ui",
+        "/opt/singbox-ui/data",
+    ]
+    removed = []
+    seen_paths = set()
+    for d in targets:
+        if not os.path.isdir(d):
+            continue
+        try:
+            for fname in os.listdir(d):
+                if fname.startswith("cache.db") or fname == "cache.db":
+                    fpath = os.path.abspath(os.path.join(d, fname))
+                    if fpath in seen_paths:
+                        continue
+                    seen_paths.add(fpath)
+                    try:
+                        if os.path.isfile(fpath) or os.path.islink(fpath):
+                            os.remove(fpath)
+                            removed.append(fpath)
+                    except Exception as e:
+                        append_log(f"清理缓存文件异常 {fpath}: {e}")
+        except Exception:
+            pass
+    if removed:
+        append_log(f"已深度清理 {len(removed)} 个历史缓存数据库文件，消除旧节点残留")
+    return len(removed)
+
+def load_subscriptions() -> dict:
+    """读取保存的订阅列表与当前激活订阅"""
+    default_subs = {"active_id": "", "subscriptions": []}
+    if not os.path.exists(SUBS_PATH):
+        return default_subs
+    try:
+        with open(SUBS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                data.setdefault("active_id", "")
+                data.setdefault("subscriptions", [])
+                return data
+    except Exception as e:
+        append_log(f"读取 subscriptions.json 异常: {e}")
+    return default_subs
+
+def save_subscriptions(data: dict):
+    """持久化保存订阅列表与当前激活订阅"""
+    try:
+        with open(SUBS_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        append_log(f"保存 subscriptions.json 异常: {e}")
 
 def ensure_tun_available() -> bool:
     """
@@ -2177,7 +2238,8 @@ class SingBoxManager:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1
+            bufsize=1,
+            cwd=BASE_DIR
         )
         self.start_time = time.time()
 
@@ -2497,6 +2559,144 @@ class SingBoxManager:
 
 manager = SingBoxManager()
 
+def process_and_apply_subscription(sub_url: str, sub_name: str = "", use_preset: bool = True, set_active: bool = True, sub_id: str = None):
+    """
+    拉取/解析订阅，彻底清理旧缓存与历史节点，以最新规则纯净重构 config.json 并重启内核，
+    同时将订阅元数据持久化至 subscriptions.json。
+    """
+    sub_url = sub_url.strip()
+    if not sub_url:
+        return False, "订阅链接或节点内容不能为空", "", ""
+
+    append_log(f"准备拉取并应用订阅: {sub_name or sub_url[:40]} (use_preset={use_preset})")
+
+    if re.match(r"^https?://", sub_url, re.I):
+        full_cfg, valid_external, err_msg = fetch_and_parse_subscription(sub_url)
+        if err_msg and not valid_external and not full_cfg:
+            msg = f"拉取或解析远程订阅失败: {err_msg}"
+            append_log(msg)
+            return False, msg, "", ""
+    else:
+        full_cfg, valid_external = parse_subscription_payload(sub_url)
+
+    if not valid_external and not full_cfg:
+        msg = "未能从订阅中提取到有效节点（支持 Sub-Store 链接、Sing-Box JSON、Base64/明文 anytls/vless/hy2 链接、Clash YAML）"
+        append_log(msg)
+        return False, msg, "", ""
+
+    # 1. 停止内核以释放 cache.db 锁
+    manager.stop()
+
+    # 2. 深度清理所有缓存数据库 (cache.db, wal, journal 等)
+    removed_count = remove_singbox_cache()
+    if removed_count:
+        append_log(f"已清理 {removed_count} 个历史缓存数据库文件，彻底消除旧节点残留。")
+
+    # 3. 始终基于标准预设全新构建（绝不携带上一版本的旧节点）
+    if use_preset or not full_cfg:
+        final_config = build_config_with_preset(valid_external)
+    else:
+        final_config = sanitize_singbox_dict(full_cfg)
+
+    final_config_str = json.dumps(final_config, indent=2, ensure_ascii=False)
+
+    # 4. 写入新的 config.json
+    if os.path.exists(CONFIG_PATH):
+        try:
+            shutil.copy(CONFIG_PATH, os.path.join(DATA_DIR, "config.json.bak"))
+        except Exception:
+            pass
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        f.write(final_config_str)
+
+    # 5. 更新 subscriptions.json 持久化存储
+    subs_data = load_subscriptions()
+    now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+    node_count = len(valid_external)
+    anytls_count = sum(1 for n in valid_external if n.get("type") == "anytls")
+
+    # 查找已有条目或创建新条目
+    if not sub_id:
+        existing = next((s for s in subs_data["subscriptions"] if s.get("url") == sub_url), None)
+        if existing:
+            sub_id = existing["id"]
+        else:
+            sub_id = f"sub_{int(time.time())}_{random.randint(100, 999)}"
+
+    target_entry = None
+    for s in subs_data["subscriptions"]:
+        if s.get("id") == sub_id:
+            target_entry = s
+            break
+
+    if not sub_name:
+        if target_entry and target_entry.get("name"):
+            sub_name = target_entry["name"]
+        else:
+            parsed = urllib.parse.urlsplit(sub_url)
+            last_part = parsed.path.rstrip("/").split("/")[-1] if parsed.path else ""
+            sub_name = urllib.parse.unquote(last_part) if last_part else f"订阅 {len(subs_data['subscriptions']) + 1}"
+
+    if target_entry:
+        target_entry["name"] = sub_name
+        target_entry["url"] = sub_url
+        target_entry["use_preset"] = use_preset
+        target_entry["node_count"] = node_count
+        target_entry["anytls_count"] = anytls_count
+        target_entry["updated_at"] = now_str
+    else:
+        subs_data["subscriptions"].append({
+            "id": sub_id,
+            "name": sub_name,
+            "url": sub_url,
+            "use_preset": use_preset,
+            "node_count": node_count,
+            "anytls_count": anytls_count,
+            "updated_at": now_str
+        })
+
+    if set_active:
+        subs_data["active_id"] = sub_id
+
+    save_subscriptions(subs_data)
+
+    # 6. 重启内核
+    ok, restart_msg = manager.start()
+    extra_info = f"（含 {anytls_count} 个 AnyTLS 节点）" if anytls_count else ""
+    append_log(f"订阅【{sub_name}】应用成功！已载入 {node_count} 个节点{extra_info}。内核启动: {restart_msg}")
+
+    msg = f"已成功切换并应用订阅【{sub_name}】！已彻底清空旧缓存并载入 {node_count} 个节点{extra_info}。"
+    if not ok:
+        msg += f" (内核启动警告: {restart_msg})"
+
+    return ok, msg, final_config_str, sub_id
+
+def clean_all_cache_and_rebuild():
+    """深度停止内核、粉碎所有缓存数据库，根据当前激活订阅重构纯净配置并重启"""
+    manager.stop()
+    removed = remove_singbox_cache()
+    subs_data = load_subscriptions()
+    active_id = subs_data.get("active_id", "")
+    active_sub = next((s for s in subs_data.get("subscriptions", []) if s.get("id") == active_id), None)
+
+    if active_sub and active_sub.get("url"):
+        append_log(f"依据当前激活订阅【{active_sub.get('name')}】重新纯净重构配置...")
+        ok, msg, cfg_str, _ = process_and_apply_subscription(
+            sub_url=active_sub["url"],
+            sub_name=active_sub.get("name", ""),
+            use_preset=active_sub.get("use_preset", True),
+            set_active=True,
+            sub_id=active_id
+        )
+        return ok, f"深度清理完成 (已粉碎 {removed} 个缓存文件)！{msg}"
+    else:
+        preset_data = load_preset_dict()
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(preset_data, f, indent=2, ensure_ascii=False)
+        ok, start_msg = manager.start()
+        return ok, f"已粉碎 {removed} 个缓存数据库文件，已重置为标准预设配置并重启内核 ({start_msg})"
+
+
 class DashboardHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=STATIC_DIR, **kwargs)
@@ -2524,6 +2724,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         try:
             if self.path == "/api/status":
                 self._send_json(manager.get_status())
+            elif self.path == "/api/subscriptions":
+                self._send_json(load_subscriptions())
             elif self.path == "/api/logs":
                 self._send_json(list(LOG_BUFFER))
             elif self.path == "/api/config":
@@ -2567,6 +2769,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             elif self.path == "/api/service/restart":
                 ok, msg = manager.restart()
                 self._send_json({"success": ok, "message": msg})
+            elif self.path == "/api/system/clean_cache":
+                ok, msg = clean_all_cache_and_rebuild()
+                self._send_json({"success": ok, "message": msg})
             elif self.path == "/api/config/save":
                 data = self._read_body_json()
                 config_str = data.get("config", "")
@@ -2597,54 +2802,112 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 ok, msg = manager.select_proxy(group, node)
                 self._send_json({"success": ok, "message": msg})
 
+            elif self.path == "/api/subscriptions/add":
+                data = self._read_body_json()
+                url = data.get("url", "").strip()
+                name = data.get("name", "").strip()
+                use_preset = data.get("use_preset", True)
+                apply_now = data.get("apply_now", True)
+                if not url:
+                    self._send_json({"success": False, "message": "订阅链接或节点内容不能为空"})
+                    return
+                if apply_now:
+                    ok, msg, cfg_str, sub_id = process_and_apply_subscription(
+                        sub_url=url, sub_name=name, use_preset=use_preset, set_active=True
+                    )
+                    self._send_json({"success": ok, "message": msg, "id": sub_id, "data": load_subscriptions(), "config": cfg_str})
+                else:
+                    subs_data = load_subscriptions()
+                    sub_id = f"sub_{int(time.time())}_{random.randint(100, 999)}"
+                    if not name:
+                        parsed = urllib.parse.urlsplit(url)
+                        last_part = parsed.path.rstrip("/").split("/")[-1] if parsed.path else ""
+                        name = urllib.parse.unquote(last_part) if last_part else f"订阅 {len(subs_data['subscriptions']) + 1}"
+                    subs_data["subscriptions"].append({
+                        "id": sub_id,
+                        "name": name,
+                        "url": url,
+                        "use_preset": use_preset,
+                        "node_count": 0,
+                        "anytls_count": 0,
+                        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")
+                    })
+                    if not subs_data["active_id"]:
+                        subs_data["active_id"] = sub_id
+                    save_subscriptions(subs_data)
+                    self._send_json({"success": True, "message": f"订阅【{name}】已成功保存", "id": sub_id, "data": subs_data})
+
+            elif self.path == "/api/subscriptions/select":
+                data = self._read_body_json()
+                sub_id = data.get("id", "").strip()
+                subs_data = load_subscriptions()
+                entry = next((s for s in subs_data.get("subscriptions", []) if s.get("id") == sub_id), None)
+                if not entry:
+                    self._send_json({"success": False, "message": "未找到指定的订阅"})
+                    return
+                ok, msg, cfg_str, _ = process_and_apply_subscription(
+                    sub_url=entry["url"],
+                    sub_name=entry.get("name", ""),
+                    use_preset=entry.get("use_preset", True),
+                    set_active=True,
+                    sub_id=sub_id
+                )
+                self._send_json({"success": ok, "message": msg, "data": load_subscriptions(), "config": cfg_str})
+
+            elif self.path == "/api/subscriptions/update":
+                data = self._read_body_json()
+                sub_id = data.get("id", "").strip()
+                subs_data = load_subscriptions()
+                entry = next((s for s in subs_data.get("subscriptions", []) if s.get("id") == sub_id), None)
+                if not entry:
+                    self._send_json({"success": False, "message": "未找到指定的订阅"})
+                    return
+                is_active = (subs_data.get("active_id") == sub_id)
+                ok, msg, cfg_str, _ = process_and_apply_subscription(
+                    sub_url=entry["url"],
+                    sub_name=entry.get("name", ""),
+                    use_preset=entry.get("use_preset", True),
+                    set_active=is_active,
+                    sub_id=sub_id
+                )
+                self._send_json({"success": ok, "message": msg, "data": load_subscriptions(), "config": cfg_str})
+
+            elif self.path == "/api/subscriptions/delete":
+                data = self._read_body_json()
+                sub_id = data.get("id", "").strip()
+                subs_data = load_subscriptions()
+                orig_len = len(subs_data.get("subscriptions", []))
+                subs_data["subscriptions"] = [s for s in subs_data.get("subscriptions", []) if s.get("id") != sub_id]
+                if len(subs_data["subscriptions"]) < orig_len:
+                    if subs_data.get("active_id") == sub_id:
+                        subs_data["active_id"] = subs_data["subscriptions"][0]["id"] if subs_data["subscriptions"] else ""
+                    save_subscriptions(subs_data)
+                    self._send_json({"success": True, "message": "订阅已成功删除", "data": subs_data})
+                else:
+                    self._send_json({"success": False, "message": "未找到要删除的订阅"})
+
             elif self.path == "/api/subscribe/import":
                 data = self._read_body_json()
                 sub_url = data.get("url", "").strip()
+                sub_name = data.get("name", "").strip()
                 use_preset = data.get("use_preset", True)
 
                 if not sub_url:
                     self._send_json({"success": False, "message": "订阅链接或节点内容不能为空"})
                     return
 
-                if re.match(r"^https?://", sub_url, re.I):
-                    append_log(f"正在拉取远程订阅: {sub_url}")
-                    full_cfg, valid_external, err_msg = fetch_and_parse_subscription(sub_url)
-                    if err_msg and not valid_external and not full_cfg:
-                        msg = f"拉取或解析远程订阅失败: {err_msg}"
-                        append_log(msg)
-                        self._send_json({"success": False, "message": msg})
-                        return
-                else:
-                    append_log("正在解析直接粘贴的节点链接/订阅文本...")
-                    full_cfg, valid_external = parse_subscription_payload(sub_url)
-
-                if not valid_external and not full_cfg:
-                    msg = "未能从订阅中提取到有效节点（支持 Sub-Store 链接、Sing-Box JSON、Base64/明文 anytls/vless/hy2 链接、Clash YAML）"
-                    append_log(msg)
-                    self._send_json({"success": False, "message": msg})
-                    return
-
-                if use_preset or not full_cfg:
-                    final_config = build_config_with_preset(valid_external)
-                else:
-                    final_config = sanitize_singbox_dict(full_cfg)
-
-                final_config_str = json.dumps(final_config, indent=2, ensure_ascii=False)
-
-                if os.path.exists(CONFIG_PATH):
-                    shutil.copy(CONFIG_PATH, os.path.join(DATA_DIR, "config.json.bak"))
-                with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                    f.write(final_config_str)
-
-                anytls_count = sum(1 for n in valid_external if n.get("type") == "anytls")
-                extra_info = f"（含 {anytls_count} 个 AnyTLS 节点）" if anytls_count else ""
-                append_log(f"订阅更新成功！共提取 {len(valid_external)} 个节点{extra_info}并注入分流策略组。")
-                ok, restart_msg = manager.restart()
-                status_note = "核心已启动生效" if ok else f"但启动异常: {restart_msg}"
+                ok, msg, cfg_str, sub_id = process_and_apply_subscription(
+                    sub_url=sub_url,
+                    sub_name=sub_name,
+                    use_preset=use_preset,
+                    set_active=True
+                )
                 self._send_json({
                     "success": ok,
-                    "message": f"订阅更新成功！已载入 {len(valid_external)} 个节点{extra_info}，{status_note}。",
-                    "config": final_config_str
+                    "message": msg,
+                    "config": cfg_str,
+                    "id": sub_id,
+                    "data": load_subscriptions()
                 })
 
             elif self.path == "/api/system/install_kernel":
@@ -2678,6 +2941,20 @@ def run_server(port=9622):
     def auto_start_kernel():
         time.sleep(1)
         if not manager.is_running():
+            if not os.path.exists(CONFIG_PATH):
+                subs_data = load_subscriptions()
+                active_id = subs_data.get("active_id", "")
+                active_sub = next((s for s in subs_data.get("subscriptions", []) if s.get("id") == active_id), None)
+                if active_sub and active_sub.get("url"):
+                    append_log(f"开箱自启机制: 检测到已有激活订阅【{active_sub.get('name')}】，正在纯净重建配置并启动...")
+                    process_and_apply_subscription(
+                        sub_url=active_sub["url"],
+                        sub_name=active_sub.get("name", ""),
+                        use_preset=active_sub.get("use_preset", True),
+                        set_active=True,
+                        sub_id=active_id
+                    )
+                    return
             ok, msg = manager.start()
             if ok:
                 append_log(f"开箱自启机制: {msg}")

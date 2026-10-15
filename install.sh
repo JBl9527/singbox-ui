@@ -151,6 +151,10 @@ mkdir -p "$INSTALL_DIR/data"
 mkdir -p "$INSTALL_DIR/static"
 mkdir -p "$INSTALL_DIR/templates"
 
+# 自动清理历史旧版本缓存数据库，杜绝旧节点残留与 DNS 污染
+rm -f "$INSTALL_DIR/cache.db"* "$INSTALL_DIR/data/cache.db"* /tmp/cache.db* 2>/dev/null || true
+
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [ -f "$SCRIPT_DIR/app.py" ] && [ -f "$SCRIPT_DIR/static/index.html" ]; then
@@ -207,7 +211,14 @@ if [ "$NEED_DOWNLOAD" = true ]; then
     fi
 fi
 
-# 初始化配置文件（开箱自带预设模板）
+# 初始化或重构配置文件
+# 若已有 subscriptions.json 订阅记录，则保留订阅地址并清理旧版 config.json，服务启动时将自动以最新标准规则纯净重构
+if [ -f "$INSTALL_DIR/data/subscriptions.json" ]; then
+    echo -e "${GREEN}✔ 检测到已保存的订阅地址，将保留订阅并清除上一版本历史节点残留...${NC}"
+    rm -f "$INSTALL_DIR/data/config.json" 2>/dev/null || true
+fi
+
+# 若无配置文件则使用开箱预设模板初始化
 if [ ! -f "$INSTALL_DIR/data/config.json" ] && [ -f "$INSTALL_DIR/templates/preset_config.json" ]; then
     cp "$INSTALL_DIR/templates/preset_config.json" "$INSTALL_DIR/data/config.json"
 fi
