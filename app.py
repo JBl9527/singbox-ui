@@ -40,8 +40,14 @@ import platform
 import subprocess
 import threading
 import argparse
+import mimetypes
 from http.server import HTTPServer, ThreadingHTTPServer, SimpleHTTPRequestHandler
 from collections import deque
+
+mimetypes.add_type("application/manifest+json", ".webmanifest")
+mimetypes.add_type("font/woff2", ".woff2")
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("text/css", ".css")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -286,7 +292,7 @@ def configure_gateway_networking():
     """
     全自动配置 Linux 底层内核 IP 转发、关闭 rp_filter 反向路径过滤、
     放行 iptables FORWARD 链并配置物理网卡 NAT MASQUERADE 与 DNS 重定向，
-    彻底解决旁路由网关模式下局域网设备无法转发 IP、DNS 失联与 Zashboard 抓不到数据的问题。
+    彻底解决旁路由网关模式下局域网设备无法转发 IP、DNS 失联与 MetaCubeX 抓不到数据的问题。
     """
     if os.name == "nt":
         return
@@ -354,7 +360,7 @@ def configure_gateway_networking():
                 subprocess.run(["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", phys_dev, "-j", "MASQUERADE"], capture_output=True, timeout=2)
 
             # 5. 核心策略路由: 将物理网卡进入的所有局域网转发流量定向至 table 2022 (tun0)
-            # 无论客户端访问任何 IP，100% 捕获进 tun0 并呈现于 Zashboard
+            # 无论客户端访问任何 IP，100% 捕获进 tun0 并呈现于 MetaCubeX 监控仪表盘
             try:
                 chk_rule = subprocess.run(["ip", "rule", "show"], capture_output=True, text=True, timeout=2).stdout
                 if f"iif {phys_dev} lookup 2022" not in chk_rule:

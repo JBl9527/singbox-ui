@@ -354,18 +354,27 @@ if [ ! -f "$INSTALL_DIR/data/config.json" ] && [ -f "$INSTALL_DIR/templates/pres
     cp "$INSTALL_DIR/templates/preset_config.json" "$INSTALL_DIR/data/config.json"
 fi
 
-# 7. 部署 Zashboard 专业策略组控制台面板
-if [ ! -f "$INSTALL_DIR/static/ui/index.html" ]; then
-    echo -e "\n${BLUE}正在拉取 Zashboard 专业策略组控制台前端文件...${NC}"
+# 7. 部署 MetaCubeX Dashboard (Metacubexd) 监控仪表盘
+if [ ! -f "$INSTALL_DIR/static/ui/index.html" ] || grep -q "zashboard" "$INSTALL_DIR/static/ui/index.html" 2>/dev/null; then
+    echo -e "\n${BLUE}正在部署 MetaCubeX Dashboard (Metacubexd) 监控仪表盘...${NC}"
     mkdir -p "$INSTALL_DIR/static/ui"
-    TMP_ZASH="/tmp/zashboard.zip"
-    if smart_download "https://github.com/Zephyruso/zashboard/releases/latest/download/dist-cdn-fonts.zip" "$TMP_ZASH" || smart_download "https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip" "$TMP_ZASH"; then
-        python3 -c "import zipfile, os; z = zipfile.ZipFile('$TMP_ZASH', 'r'); [open(os.path.join('$INSTALL_DIR/static/ui', m.filename[5:]), 'wb').write(z.read(m)) for m in z.infolist() if m.filename.startswith('dist/') and not m.is_dir() and os.makedirs(os.path.dirname(os.path.join('$INSTALL_DIR/static/ui', m.filename[5:])), exist_ok=True) is None]" 2>/dev/null || (which unzip &>/dev/null && unzip -q -o "$TMP_ZASH" -d /tmp/zash_ext/ && cp -r /tmp/zash_ext/dist/* "$INSTALL_DIR/static/ui/") || true
-        rm -f "$TMP_ZASH" 2>/dev/null || true
-        rm -rf /tmp/zash_ext 2>/dev/null || true
-        echo -e "${GREEN}✔ Zashboard 仪表盘部署完成！${NC}"
+    TMP_META="/tmp/metacubexd.tgz"
+    if smart_download "https://github.com/MetaCubeX/metacubexd/releases/latest/download/compressed-dist.tgz" "$TMP_META"; then
+        rm -rf "$INSTALL_DIR/static/ui/"* 2>/dev/null || true
+        tar -xzf "$TMP_META" -C "$INSTALL_DIR/static/ui" 2>/dev/null || true
+        rm -f "$TMP_META" 2>/dev/null || true
+        echo -e "${GREEN}✔ MetaCubeX Dashboard (Metacubexd) 部署完成！${NC}"
     fi
 fi
+
+# 确保 config.js 具有自适应当前主机的 defaultBackendURL
+cat << 'EOF' > "$INSTALL_DIR/static/ui/config.js"
+window.__METACUBEXD_CONFIG__ = {
+  defaultBackendURL: (typeof window !== 'undefined' && window.location) ? ((window.location.protocol === 'https:' ? 'https://' : 'http://') + (window.location.hostname || '127.0.0.1') + ':9090') : 'http://127.0.0.1:9090',
+  githubToken: '',
+};
+EOF
+
 ln -sfn "$INSTALL_DIR/static/ui" "$INSTALL_DIR/ui" 2>/dev/null || true
 
 # 8. 自动配置防火墙规则 (放行 9622 UI 端口、2080 代理端口、9090 Clash API 端口与 53 DNS 端口)
@@ -464,5 +473,5 @@ echo -e "--------------------------------------------------------------------"
 echo -e "${YELLOW}旁路由 / 网关使用提示:${NC}"
 echo -e "局域网内的手机、电脑或电视盒子，只需将网络设置中的【默认网关】与【DNS 服务器】"
 echo -e "填写为本服务器 IP (${CYAN}${LOCAL_IP}${NC})，即可实现全设备免客户端透明代理与智能分流！"
-echo -e "在 Zashboard 控制台中可实时查看所有接入设备的连接数据与实时速率。"
+echo -e "在 MetaCubeX (Metacubexd) 监控仪表盘中可实时查看所有接入设备的连接数据与实时速率。"
 echo -e "${GREEN}====================================================================${NC}\n"

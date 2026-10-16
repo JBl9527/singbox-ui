@@ -47,15 +47,15 @@
             <span>Sing-Box WebUI</span>
             <span class="text-xs px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">Linux:9622</span>
           </h1>
-          <p class="text-xs text-gray-400">低功耗架构优化 · 订阅融合与 Zashboard 策略组控制</p>
+          <p class="text-xs text-gray-400">低功耗架构优化 · 订阅融合与 MetaCubeX 监控仪表盘</p>
         </div>
       </div>
 
       <!-- 右侧快速状态徽章与快捷跳转 -->
       <div class="flex items-center space-x-3">
-        <a id="topZashboardLink" href="/ui/" target="_blank"
+        <a id="topMetacubexdLink" href="/ui/" target="_blank"
           class="hidden sm:flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-xs font-semibold text-white shadow-md transition cursor-pointer">
-          <span>🚀 打开 Zashboard 面板</span>
+          <span>🚀 打开 MetaCubeX 仪表盘</span>
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
         </a>
 
@@ -135,7 +135,7 @@
         <span class="text-[11px] px-2.5 py-0.5 rounded bg-amber-900/60 text-amber-300 border border-amber-700/50">局域网透明网关必需</span>
       </div>
       <p class="text-gray-300 leading-relaxed">
-        当前容器无权限创建或读写 <code>/dev/net/tun</code> 设备。目前 Sing-Box 正以 <strong>0.0.0.0:2080 端口代理</strong> 模式运行。若需使用局域网设备免客户端透明网关与 Zashboard 活跃流量抓取，请在 <strong>Proxmox VE (PVE) 宿主机 Shell</strong> 中执行以下 3 步开启直通：
+        当前容器无权限创建或读写 <code>/dev/net/tun</code> 设备。目前 Sing-Box 正以 <strong>0.0.0.0:2080 端口代理</strong> 模式运行。若需使用局域网设备免客户端透明网关与 MetaCubeX 活跃流量抓取，请在 <strong>Proxmox VE (PVE) 宿主机 Shell</strong> 中执行以下 3 步开启直通：
       </p>
       <div class="bg-black/60 rounded-xl p-3 font-mono text-[11px] text-emerald-400 border border-gray-800 space-y-1 select-all">
         <div># 1. 打开容器配置文件 (将 &lt;CTID&gt; 替换为当前容器编号，例如 100):</div>
@@ -154,9 +154,9 @@
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
         <span>订阅导入与预设</span>
       </button>
-      <button onclick="switchTab('zashboardTab')" id="tabBtn-zashboardTab" class="tab-btn px-4 py-2 text-sm font-medium rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition whitespace-nowrap flex items-center space-x-1.5 cursor-pointer">
+      <button onclick="switchTab('metacubexdTab')" id="tabBtn-metacubexdTab" class="tab-btn px-4 py-2 text-sm font-medium rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition whitespace-nowrap flex items-center space-x-1.5 cursor-pointer">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
-        <span>🎯 Zashboard 策略组控制台</span>
+        <span>🎯 MetaCubeX 监控仪表盘 (Metacubexd)</span>
       </button>
       <button onclick="switchTab('configTab')" id="tabBtn-configTab" class="tab-btn px-4 py-2 text-sm font-medium rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition whitespace-nowrap cursor-pointer">
         运行配置 (JSON)
@@ -184,8 +184,8 @@
             <button onclick="cleanCache()" class="px-3.5 py-1.5 text-xs bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-xl transition flex items-center space-x-1.5 cursor-pointer" title="粉碎 cache.db 并以当前订阅纯净重构">
               <span>🧹 深度清理缓存并重启</span>
             </button>
-            <button onclick="switchTab('zashboardTab')" class="px-3.5 py-1.5 text-xs bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 rounded-xl transition flex items-center space-x-1 cursor-pointer">
-              <span>前往 Zashboard 策略组 ➔</span>
+            <button onclick="switchTab('metacubexdTab')" class="px-3.5 py-1.5 text-xs bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 rounded-xl transition flex items-center space-x-1 cursor-pointer">
+              <span>前往 MetaCubeX 仪表盘 ➔</span>
             </button>
           </div>
         </div>
@@ -253,41 +253,41 @@
           <span>缓存机制与专业分流策略组说明：</span>
         </div>
         <ul class="text-xs text-gray-400 space-y-2 list-disc list-inside">
-          <li><strong class="text-gray-300">零残留缓存清空：</strong>Sing-Box 内置 SQLite <code>cache.db</code> 会记录历史节点选择与 DNS 缓存。切换或刷新订阅时，面板将全自动物理粉碎该缓存文件，确保 Zashboard 与 Clash API 仅显示当前订阅的真实有效节点。</li>
+          <li><strong class="text-gray-300">零残留缓存清空：</strong>Sing-Box 内置 SQLite <code>cache.db</code> 会记录历史节点选择与 DNS 缓存。切换或刷新订阅时，面板将全自动物理粉碎该缓存文件，确保 MetaCubeX 仪表盘与 Clash API 仅显示当前订阅的真实有效节点。</li>
           <li><strong class="text-gray-300">多订阅热切换：</strong>在上方【已保存订阅列表】中，点击【⚡ 立即切换生效】即可在数秒内无损更换核心运行节点，并自动保持订阅链接不丢失。</li>
           <li><strong class="text-gray-300">业务专属分流：</strong>自动分流至 <code>AI</code> (ChatGPT/Claude/Perplexity)、<code>YouTube</code>、<code>Google</code>、<code>Github</code>、<code>Telegram</code>、<code>Netflix</code>、<code>Steam</code>、<code>OneDrive</code>、<code>Microsoft</code>、<code>Apple</code>、<code>Emby</code>、<code>Wallet</code> 与 <code>漏网之鱼</code>。</li>
           <li><strong class="text-gray-300">地区分级归类：</strong>自动识别归类 <code>香港</code>、<code>日本</code>、<code>狮城</code>、<code>美国</code>、<code>台湾</code> 专属自动与手动测速组，策略组内部层次分明，拒绝平铺杂乱。</li>
           <li><strong class="text-gray-300">AnyTLS 原生兼容：</strong>100% 完整清洗并保留全部 AnyTLS 节点，适配官方 sing-box 1.14 最新字段规范。</li>
-          <li><strong class="text-indigo-400">旁路由 / 透明网关：</strong>已全自动开启底层内核 IP 转发 (<code>net.ipv4.ip_forward=1</code>) 与反向路径过滤 (<code>rp_filter=0</code>)，并内置 <code>0.0.0.0:53</code> 端口的 DNS 劫持与 Fake-IP 分流。局域网内的手机、电脑或电视盒子将【网关】与【DNS】设置为本服务器 IP，即可实现全设备免客户端透明代理，并在 Zashboard 中实时呈现所有连接。</li>
+          <li><strong class="text-indigo-400">旁路由 / 透明网关：</strong>已全自动开启底层内核 IP 转发 (<code>net.ipv4.ip_forward=1</code>) 与反向路径过滤 (<code>rp_filter=0</code>)，并内置 <code>0.0.0.0:53</code> 端口的 DNS 劫持与 Fake-IP 分流。局域网内的手机、电脑或电视盒子将【网关】与【DNS】设置为本服务器 IP，即可实现全设备免客户端透明代理，并在 MetaCubeX 控制台中实时监控所有流量连接。</li>
         </ul>
       </div>
     </section>
 
-    <!-- Tab 2: Zashboard 专业策略组与节点仪表盘 -->
-    <section id="zashboardTab" class="tab-content hidden space-y-4">
+    <!-- Tab 2: MetaCubeX 监控仪表盘 (Metacubexd) -->
+    <section id="metacubexdTab" class="tab-content hidden space-y-4">
       <div class="bg-gray-900 border border-gray-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 class="text-sm font-semibold text-white flex items-center space-x-2">
-            <span>🚀 Zashboard 专业策略组与节点仪表盘</span>
+            <span>🚀 MetaCubeX 监控仪表盘 (Metacubexd)</span>
             <span class="text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800">Clash API :9090</span>
           </h2>
-          <p class="text-xs text-gray-400 mt-0.5">支持策略组分级展开/折叠、真连接延迟测速、实时流量速率、活跃连接明细与规则命中可视化。</p>
+          <p class="text-xs text-gray-400 mt-0.5">实时网络流量吞吐、活跃连接透视监控、节点真连接延迟测速与分流规则命中追踪。</p>
         </div>
         <div class="flex items-center space-x-2">
-          <button onclick="reloadZashboardFrame()" class="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg border border-gray-700 transition flex items-center space-x-1 cursor-pointer">
+          <button onclick="reloadMetacubexdFrame()" class="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg border border-gray-700 transition flex items-center space-x-1 cursor-pointer">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
             <span>刷新面板</span>
           </button>
-          <button onclick="openZashboardNewTab()" class="px-3.5 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg shadow transition flex items-center space-x-1 cursor-pointer">
+          <button onclick="openMetacubexdNewTab()" class="px-3.5 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg shadow transition flex items-center space-x-1 cursor-pointer">
             <span>新标签页全屏打开</span>
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
           </button>
         </div>
       </div>
 
-      <!-- 内嵌 Zashboard 仪表盘容器 -->
+      <!-- 内嵌 Metacubexd 仪表盘容器 -->
       <div class="relative w-full rounded-2xl border border-gray-800 overflow-hidden bg-gray-950 shadow-2xl">
-        <iframe id="zashboardFrame" src="" class="w-full h-[820px] border-0" allow="clipboard-read; clipboard-write"></iframe>
+        <iframe id="metacubexdFrame" src="" class="w-full h-[820px] border-0" allow="clipboard-read; clipboard-write"></iframe>
       </div>
     </section>
 
@@ -344,7 +344,7 @@
   </main>
 
   <footer class="border-t border-gray-800/80 py-4 text-center text-xs text-gray-500">
-    Sing-Box Dashboard · 轻量级 ARM/x86 适配 · 集成 Zashboard 策略组仪表盘 · UI 端口: 9622
+    Sing-Box Dashboard · 轻量级 ARM/x86 适配 · 集成 MetaCubeX (Metacubexd) 监控仪表盘 · UI 端口: 9622
   </footer>
 
   <!-- 提示弹窗 (Toast) -->
@@ -353,28 +353,28 @@
   </div>
 
   <script>
-    function getZashboardUrl() {
+    function getMetacubexdUrl() {
       const host = window.location.hostname || '127.0.0.1';
-      return `/ui/#/setup?hostname=${encodeURIComponent(host)}&port=9090`;
+      return `/ui/?hostname=${encodeURIComponent(host)}&port=9090&secret=`;
     }
 
-    function loadZashboardFrame() {
-      const frame = document.getElementById('zashboardFrame');
+    function loadMetacubexdFrame() {
+      const frame = document.getElementById('metacubexdFrame');
       if (frame && (!frame.src || frame.src === 'about:blank' || !frame.src.includes('/ui/'))) {
-        frame.src = getZashboardUrl();
+        frame.src = getMetacubexdUrl();
       }
     }
 
-    function reloadZashboardFrame() {
-      const frame = document.getElementById('zashboardFrame');
+    function reloadMetacubexdFrame() {
+      const frame = document.getElementById('metacubexdFrame');
       if (frame) {
-        frame.src = getZashboardUrl() + '&t=' + Date.now();
-        showToast('正在重新连接 Zashboard 面板...');
+        frame.src = getMetacubexdUrl() + '&t=' + Date.now();
+        showToast('正在重新连接 MetaCubeX 仪表盘...');
       }
     }
 
-    function openZashboardNewTab() {
-      window.open(getZashboardUrl(), '_blank');
+    function openMetacubexdNewTab() {
+      window.open(getMetacubexdUrl(), '_blank');
     }
 
     function showToast(msg, isSuccess = true) {
@@ -406,8 +406,8 @@
 
       if (tabId === 'logsTab') {
         refreshLogs();
-      } else if (tabId === 'zashboardTab') {
-        loadZashboardFrame();
+      } else if (tabId === 'metacubexdTab') {
+        loadMetacubexdFrame();
       }
     }
 
@@ -633,7 +633,7 @@
         if (data.config) document.getElementById('configEditor').value = data.config;
         updateStatus();
         setTimeout(() => {
-          reloadZashboardFrame();
+          reloadMetacubexdFrame();
         }, 800);
       } catch (e) {
         showToast('切换订阅失败: ' + e, false);
@@ -654,7 +654,7 @@
         if (data.config) document.getElementById('configEditor').value = data.config;
         updateStatus();
         setTimeout(() => {
-          reloadZashboardFrame();
+          reloadMetacubexdFrame();
         }, 800);
       } catch (e) {
         showToast('刷新订阅失败: ' + e, false);
@@ -710,8 +710,8 @@
           updateStatus();
           if (applyNow) {
             setTimeout(() => {
-              switchTab('zashboardTab');
-              reloadZashboardFrame();
+              switchTab('metacubexdTab');
+              reloadMetacubexdFrame();
             }, 1200);
           }
         }
@@ -731,7 +731,7 @@
         loadCurrentConfig();
         loadSubscriptions();
         setTimeout(() => {
-          reloadZashboardFrame();
+          reloadMetacubexdFrame();
         }, 1000);
       } catch (e) {
         showToast('清理缓存请求失败: ' + e, false);
@@ -816,8 +816,8 @@
       loadCurrentConfig();
       loadSubscriptions();
       updateStatus();
-      const topLink = document.getElementById('topZashboardLink');
-      if (topLink) topLink.href = getZashboardUrl();
+      const topLink = document.getElementById('topMetacubexdLink');
+      if (topLink) topLink.href = getMetacubexdUrl();
 
       setInterval(updateStatus, 3000);
       setInterval(() => {
