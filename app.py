@@ -290,7 +290,7 @@ def ensure_tun_available() -> bool:
 
 def configure_gateway_networking():
     """
-    全自动配置 Linux 底层内核 IP 转发、关闭 rp_filter 反向路径过滤、
+    全自动配置 Linux 底层内核 IP 转发、关闭 rp_filter 反向路径过滤与 ICMP 重定向、
     放行 iptables FORWARD 链并配置物理网卡 NAT MASQUERADE 与 DNS 重定向，
     彻底解决旁路由网关模式下局域网设备无法转发 IP、DNS 失联与 MetaCubeX 抓不到数据的问题。
     """
@@ -298,7 +298,7 @@ def configure_gateway_networking():
         return
 
     try:
-        # 1. 开启内核转发与关闭 rp_filter 反向路径过滤 (关键: 防止内核丢弃旁路由非对称路由包)
+        # 1. 开启内核转发与关闭 rp_filter 反向路径过滤及 send_redirects 重定向 (防止丢弃旁路由非对称包及误导客户端)
         sysctl_cmd = [
             "sysctl", "-w",
             "net.ipv4.ip_forward=1",
@@ -308,6 +308,8 @@ def configure_gateway_networking():
             "net.ipv6.conf.default.forwarding=1",
             "net.ipv4.conf.all.rp_filter=0",
             "net.ipv4.conf.default.rp_filter=0",
+            "net.ipv4.conf.all.send_redirects=0",
+            "net.ipv4.conf.default.send_redirects=0",
             "net.ipv4.conf.all.route_localnet=1"
         ]
         subprocess.run(sysctl_cmd, capture_output=True, timeout=3)
@@ -317,18 +319,48 @@ def configure_gateway_networking():
     try:
         if os.path.exists("/proc/sys/net/ipv4/conf"):
             for entry in os.listdir("/proc/sys/net/ipv4/conf"):
-                rp_file = f"/proc/sys/net/ipv4/conf/{entry}/rp_filter"
-                if os.path.isfile(rp_file):
-                    try:
-                        with open(rp_file, "w") as f:
-                            f.write("0\n")
-                    except Exception:
-                        pass
+                for prop in ("rp_filter", "send_redirects"):
+                    p_file = f"/proc/sys/net/ipv4/conf/{entry}/{prop}"
+                    if os.path.isfile(p_file):
+                        try:
+                            with open(p_file, "w") as f:
+                                f.write("0\n")
+                        except Exception:
+                            pass
     except Exception:
         pass
 
     try:
-        # 2. iptables 放行 FORWARD 链所有转发包与 tun0 接口
+        # 2. 检查并释放 systemd-resolved 对 53 端口的独占监听，保障 sing-box 0.0.0.0:53 (dns-in) 顺利启动
+        chk_53 = subprocess.run(["ss", "-lnup"], capture_output=True, text=True, timeout=2).stdout
+        if ":53 " in chk_53 and "systemd-resolve" in chk_53:
+            res_conf = "/etc/systemd/resolved.conf"
+            if os.path.isfile(res_conf):
+                try:
+                    with open(res_conf, "r", encoding="utf-8", errors="ignore") as rf:
+                        rc_content = rf.read()
+                    if "DNSStubListener=no" not in rc_content:
+                        import re
+                        new_rc = re.sub(r"^#?DNSStubListener=.*", "DNSStubListener=no", rc_content, flags=re.MULTILINE)
+                        if "DNSStubListener=no" not in new_rc:
+                            new_rc += "\nDNSStubListener=no\n"
+                        with open(res_conf, "w", encoding="utf-8") as wf:
+                            wf.write(new_rc)
+                        subprocess.run(["systemctl", "restart", "systemd-resolved"], capture_output=True, timeout=3)
+                except Exception:
+                    pass
+            if os.path.islink("/etc/resolv.conf"):
+                try:
+                    os.unlink("/etc/resolv.conf")
+                    with open("/etc/resolv.conf", "w") as f:
+                        f.write("nameserver 223.5.5.5\nnameserver 119.29.29.29\n")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    try:
+        # 3. iptables 放行 FORWARD 链所有转发包与 tun0 接口
         for cmd in [
             ["iptables", "-P", "FORWARD", "ACCEPT"],
             ["iptables", "-I", "FORWARD", "-j", "ACCEPT"],
@@ -337,14 +369,14 @@ def configure_gateway_networking():
         ]:
             subprocess.run(cmd, capture_output=True, timeout=2)
 
-        # 3. 兼容 Docker 运行环境中的 DOCKER-USER 链
+        # 4. 兼容 Docker 运行环境中的 DOCKER-USER 链
         chk_docker = subprocess.run(["iptables", "-L", "DOCKER-USER"], capture_output=True, timeout=2)
         if chk_docker.returncode == 0:
             subprocess.run(["iptables", "-I", "DOCKER-USER", "-i", "tun0", "-j", "ACCEPT"], capture_output=True, timeout=2)
             subprocess.run(["iptables", "-I", "DOCKER-USER", "-o", "tun0", "-j", "ACCEPT"], capture_output=True, timeout=2)
             subprocess.run(["iptables", "-I", "DOCKER-USER", "-j", "ACCEPT"], capture_output=True, timeout=2)
 
-        # 4. 获取默认物理出口网卡 (如 eth0, ens3, enp3s0 等) 并添加 MASQUERADE
+        # 5. 获取默认物理出口网卡 (如 eth0, ens18, enp3s0 等) 并添加 MASQUERADE
         route_proc = subprocess.run(["ip", "route", "show", "default"], capture_output=True, text=True, timeout=2)
         phys_dev = ""
         for line in route_proc.stdout.splitlines():
@@ -359,7 +391,7 @@ def configure_gateway_networking():
             if chk_nat.returncode != 0:
                 subprocess.run(["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", phys_dev, "-j", "MASQUERADE"], capture_output=True, timeout=2)
 
-            # 5. 核心策略路由: 将物理网卡进入的所有局域网转发流量定向至 table 2022 (tun0)
+            # 核心策略路由: 将物理网卡进入的所有局域网转发流量定向至 table 2022 (tun0)
             # 无论客户端访问任何 IP，100% 捕获进 tun0 并呈现于 MetaCubeX 监控仪表盘
             try:
                 chk_rule = subprocess.run(["ip", "rule", "show"], capture_output=True, text=True, timeout=2).stdout
@@ -368,12 +400,12 @@ def configure_gateway_networking():
             except Exception:
                 pass
 
-        # 6. DNS 53 端口强制 DNAT 到 172.19.0.1:53 (tun0)
+        # 6. DNS 53 端口重定向至本地 53 端口 (sing-box dns-in direct 53 端口)
         # 无论客户端 DNS 是写本机 IP 还是 8.8.8.8，强制直达 sing-box 内核 hijack-dns，彻底解决端口 53 拒绝访问问题
         for proto in ("udp", "tcp"):
-            chk_dnat = subprocess.run(["iptables", "-t", "nat", "-C", "PREROUTING", "-p", proto, "--dport", "53", "-j", "DNAT", "--to-destination", "172.19.0.1:53"], capture_output=True, timeout=2)
-            if chk_dnat.returncode != 0:
-                subprocess.run(["iptables", "-t", "nat", "-I", "PREROUTING", "-p", proto, "--dport", "53", "-j", "DNAT", "--to-destination", "172.19.0.1:53"], capture_output=True, timeout=2)
+            chk_redir = subprocess.run(["iptables", "-t", "nat", "-C", "PREROUTING", "-p", proto, "--dport", "53", "-j", "REDIRECT", "--to-ports", "53"], capture_output=True, timeout=2)
+            if chk_redir.returncode != 0:
+                subprocess.run(["iptables", "-t", "nat", "-I", "PREROUTING", "-p", proto, "--dport", "53", "-j", "REDIRECT", "--to-ports", "53"], capture_output=True, timeout=2)
     except Exception:
         pass
 
@@ -507,7 +539,12 @@ DEFAULT_PRESET_CONFIG = {
                 "server": "ali"
             },
             {
-                "inbound": ["tun-in"],
+                "rule_set": ["geosite-cn"],
+                "action": "route",
+                "server": "ali"
+            },
+            {
+                "inbound": ["tun-in", "dns-in"],
                 "query_type": ["A", "AAAA"],
                 "action": "route",
                 "server": "fakeip",
@@ -518,6 +555,12 @@ DEFAULT_PRESET_CONFIG = {
         "strategy": "ipv4_only"
     },
     "inbounds": [
+        {
+            "type": "direct",
+            "tag": "dns-in",
+            "listen": "0.0.0.0",
+            "listen_port": 53
+        },
         {
             "type": "mixed",
             "tag": "mixed-in",
@@ -840,6 +883,22 @@ DEFAULT_PRESET_CONFIG = {
         "auto_detect_interface": True,
         "default_domain_resolver": "ali",
         "final": "漏网之鱼",
+        "rule_set": [
+            {
+                "tag": "geosite-cn",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
+                "download_detour": "直连"
+            },
+            {
+                "tag": "geoip-cn",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
+                "download_detour": "直连"
+            }
+        ],
         "rules": [
             {
                 "action": "sniff"
@@ -850,6 +909,10 @@ DEFAULT_PRESET_CONFIG = {
             },
             {
                 "port": 53,
+                "action": "hijack-dns"
+            },
+            {
+                "inbound": ["dns-in"],
                 "action": "hijack-dns"
             },
             {
@@ -919,6 +982,10 @@ DEFAULT_PRESET_CONFIG = {
                     ".bilibili.com", ".hdslb.com", ".douyin.com", ".weibo.com",
                     ".wechat.com", ".weixin.qq.com", ".mi.com", ".xiaomi.com"
                 ],
+                "outbound": "直连"
+            },
+            {
+                "rule_set": ["geosite-cn", "geoip-cn"],
                 "outbound": "直连"
             }
         ]
@@ -1348,12 +1415,25 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
                         ib[new_k].append(v)
             clean_inbounds.append(ib)
         elif ib_type == "direct" and (ib.get("listen_port") == 53 or ib_tag == "dns-in"):
-            # 旁路由模式下由 tun0 与 iptables DNAT 全权接管 53 端口，剔除重复的 direct 53 入站，避免端口占用与无法劫持
-            continue
+            ib["type"] = "direct"
+            ib["tag"] = "dns-in"
+            ib["listen"] = "0.0.0.0"
+            ib["listen_port"] = 53
+            clean_inbounds.append(ib)
         else:
             clean_inbounds.append(ib)
 
-    # 核心保障: 只要系统支持 TUN (/dev/net/tun 可用)，若当前配置缺失 TUN 入站，则强制自动注入标准 tun0！
+    # 核心保障 1: 自动注入 direct 0.0.0.0:53 (dns-in)，接管局域网设备直接发送到旁路由本机的 DNS 查询
+    has_dns_in = any(ib.get("tag") == "dns-in" or (ib.get("type") == "direct" and ib.get("listen_port") == 53) for ib in clean_inbounds)
+    if not has_dns_in:
+        clean_inbounds.insert(0, {
+            "type": "direct",
+            "tag": "dns-in",
+            "listen": "0.0.0.0",
+            "listen_port": 53
+        })
+
+    # 核心保障 2: 只要系统支持 TUN (/dev/net/tun 可用)，若当前配置缺失 TUN 入站，则强制自动注入标准 tun0！
     # 彻底杜绝此前因为历史配置被误清空 TUN 导致无法创建 tun0 网卡和 table 2022 的问题
     if tun_supported and not has_tun:
         clean_inbounds.append({
@@ -1608,8 +1688,10 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
             if srv_target in fakeip_server_tags:
                 if not has_tun:
                     continue
-                # 有 TUN 时，确保 fakeip 规则作用于 tun 入站
-                r["inbound"] = sorted(list(tun_tags))
+                # 有 TUN 时，确保 fakeip 规则作用于 tun 入站与 dns-in 局域网入站
+                fakeip_ib = set(tun_tags)
+                fakeip_ib.add("dns-in")
+                r["inbound"] = sorted(list(fakeip_ib))
             elif srv_target in removed_rcode_tags or str(srv_target).startswith("rcode://"):
                 r.pop("server", None)
                 r["action"] = "reject"
@@ -1648,21 +1730,48 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
     if route_cfg.get("final") not in valid_tags:
         route_cfg["final"] = main_proxy_tag
 
+    # 核心保障: 自动注入 geosite-cn 与 geoip-cn 规则集 (国内高速镜像源，适配 sing-box 1.14.3)
+    rule_sets = route_cfg.setdefault("rule_set", [])
+    if not isinstance(rule_sets, list):
+        rule_sets = []
+        route_cfg["rule_set"] = rule_sets
+
+    existing_rs_map = {}
+    for rs in rule_sets:
+        if isinstance(rs, dict) and rs.get("tag"):
+            existing_rs_map[rs["tag"]] = rs
+
+    if "geosite-cn" not in existing_rs_map:
+        rule_sets.append({
+            "tag": "geosite-cn",
+            "type": "remote",
+            "format": "binary",
+            "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
+            "download_detour": direct_tag
+        })
+    if "geoip-cn" not in existing_rs_map:
+        rule_sets.append({
+            "tag": "geoip-cn",
+            "type": "remote",
+            "format": "binary",
+            "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
+            "download_detour": direct_tag
+        })
+
     valid_rule_sets = set()
-    if "rule_set" in route_cfg and isinstance(route_cfg["rule_set"], list):
-        clean_rs = []
-        for rs in route_cfg["rule_set"]:
-            if not isinstance(rs, dict) or not rs.get("tag"):
-                continue
-            rs = dict(rs)
-            if "download_detour" in rs and rs["download_detour"] not in valid_tags:
-                rs["download_detour"] = main_proxy_tag
-            clean_rs.append(rs)
-            if isinstance(rs["tag"], list):
-                valid_rule_sets.update(rs["tag"])
-            else:
-                valid_rule_sets.add(rs["tag"])
-        route_cfg["rule_set"] = clean_rs
+    clean_rs = []
+    for rs in rule_sets:
+        if not isinstance(rs, dict) or not rs.get("tag"):
+            continue
+        rs = dict(rs)
+        if "download_detour" in rs and rs["download_detour"] not in valid_tags:
+            rs["download_detour"] = direct_tag or main_proxy_tag
+        clean_rs.append(rs)
+        if isinstance(rs["tag"], list):
+            valid_rule_sets.update(rs["tag"])
+        else:
+            valid_rule_sets.add(rs["tag"])
+    route_cfg["rule_set"] = clean_rs
 
     if "rules" in dns_cfg and isinstance(dns_cfg["rules"], list):
         final_dns_rules = []
@@ -1678,6 +1787,19 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
             match_keys = set(r.keys()) - {"action", "server", "disable_cache", "rewrite_ttl", "client_subnet", "strategy", "method", "rcode"}
             if match_keys:
                 final_dns_rules.append(r)
+
+        # 确保 dns.rules 包含 geosite-cn 直连解析规则
+        has_geosite_cn_dns = any(
+            isinstance(r.get("rule_set"), (str, list)) and
+            "geosite-cn" in (r.get("rule_set") if isinstance(r.get("rule_set"), list) else [r.get("rule_set")])
+            for r in final_dns_rules
+        )
+        if not has_geosite_cn_dns:
+            final_dns_rules.insert(0, {
+                "rule_set": ["geosite-cn"],
+                "action": "route",
+                "server": direct_dns_tag
+            })
         dns_cfg["rules"] = final_dns_rules
 
     raw_route_rules = route_cfg.get("rules", [])
@@ -1739,6 +1861,15 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
         if match_keys:
             clean_route_rules.append(r)
 
+    # 局域网 53 端口与 direct 入站劫持保障
+    has_dns_in_hijack = any(
+        r.get("action") == "hijack-dns" and
+        "dns-in" in (r.get("inbound") if isinstance(r.get("inbound"), list) else [r.get("inbound")])
+        for r in clean_route_rules
+    )
+    if not has_dns_in_hijack:
+        clean_route_rules.insert(0, {"inbound": ["dns-in"], "action": "hijack-dns"})
+
     has_port_53_hijack = any(
         r.get("action") == "hijack-dns" and r.get("port") == 53
         for r in clean_route_rules
@@ -1764,6 +1895,19 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
         else:
             insert_idx = len(clean_route_rules)
         clean_route_rules.insert(insert_idx, {"ip_is_private": True, "outbound": direct_tag})
+
+    # 国内规则集 (geosite-cn + geoip-cn) 直连保障: 确保国内网站与IP零延迟直连
+    has_cn_ruleset = any(
+        r.get("outbound") == direct_tag and
+        isinstance(r.get("rule_set"), list) and
+        ("geosite-cn" in r.get("rule_set") or "geoip-cn" in r.get("rule_set"))
+        for r in clean_route_rules
+    )
+    if not has_cn_ruleset:
+        clean_route_rules.append({
+            "rule_set": ["geosite-cn", "geoip-cn"],
+            "outbound": direct_tag
+        })
 
     route_cfg["rules"] = clean_route_rules
 
@@ -2539,6 +2683,15 @@ class SingBoxManager:
         self._log_thread = threading.Thread(target=log_reader, args=(self.process,), daemon=True)
         self._log_thread.start()
         time.sleep(0.45)
+        if self.process.poll() is None and os.name != "nt":
+            for prop in ("rp_filter", "send_redirects"):
+                tun_f = f"/proc/sys/net/ipv4/conf/tun0/{prop}"
+                if os.path.isfile(tun_f):
+                    try:
+                        with open(tun_f, "w") as f:
+                            f.write("0\n")
+                    except Exception:
+                        pass
         return self.process.poll() is None
 
     def start(self):

@@ -187,7 +187,7 @@ else
     fi
 fi
 
-# 配置并固化 IPv4 / IPv6 转发与旁路由反向路径过滤 (关闭 rp_filter 防止丢弃非对称包)
+# 配置并固化 IPv4 / IPv6 转发与旁路由反向路径过滤 (关闭 rp_filter 防止丢弃非对称包，关闭 send_redirects 防止客户端旁路)
 SYSCTL_CONF="/etc/sysctl.d/99-singbox.conf"
 cat <<EOF > "$SYSCTL_CONF"
 # Sing-Box Network Forwarding Optimization
@@ -198,6 +198,8 @@ net.ipv6.conf.all.forwarding = 1
 net.ipv6.conf.default.forwarding = 1
 net.ipv4.conf.all.rp_filter = 0
 net.ipv4.conf.default.rp_filter = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
 net.ipv4.conf.all.route_localnet = 1
 EOF
 
@@ -207,8 +209,11 @@ if [ -d "/proc/sys/net/ipv4/conf" ]; then
     for f in /proc/sys/net/ipv4/conf/*/rp_filter; do
         [ -f "$f" ] && echo 0 > "$f" 2>/dev/null || true
     done
+    for f in /proc/sys/net/ipv4/conf/*/send_redirects; do
+        [ -f "$f" ] && echo 0 > "$f" 2>/dev/null || true
+    done
 fi
-echo -e "${GREEN}✔ 内核 IP 转发与旁路由非对称路由已开启 (ip_forward=1, rp_filter=0)${NC}"
+echo -e "${GREEN}✔ 内核 IP 转发与旁路由非对称路由已开启 (ip_forward=1, rp_filter=0, send_redirects=0)${NC}"
 
 # 释放 53 端口占用 (如 systemd-resolved DNSStubListener)，让 sing-box 能够监听 0.0.0.0:53 接收局域网设备 DNS 查询
 if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
@@ -412,9 +417,9 @@ if [ -n "$PHYS_DEV" ]; then
     ip rule del iif "$PHYS_DEV" table 2022 2>/dev/null || true
     ip rule add iif "$PHYS_DEV" table 2022 pref 15000 2>/dev/null || true
 fi
-# 强制将所有 53 端口 DNS 请求重定向至 172.19.0.1:53 (tun0 内核 hijack-dns)
-iptables -t nat -C PREROUTING -p udp --dport 53 -j DNAT --to-destination 172.19.0.1:53 2>/dev/null || iptables -t nat -I PREROUTING -p udp --dport 53 -j DNAT --to-destination 172.19.0.1:53 2>/dev/null || true
-iptables -t nat -C PREROUTING -p tcp --dport 53 -j DNAT --to-destination 172.19.0.1:53 2>/dev/null || iptables -t nat -I PREROUTING -p tcp --dport 53 -j DNAT --to-destination 172.19.0.1:53 2>/dev/null || true
+# 强制将所有 53 端口 DNS 请求重定向至本地 53 端口 (sing-box 0.0.0.0:53 dns-in 内核 hijack-dns)
+iptables -t nat -C PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || iptables -t nat -I PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || true
+iptables -t nat -C PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || iptables -t nat -I PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || true
 
 # 8. 注册 systemd 开机自启服务并立即启动
 echo -e "\n${BLUE}[6/6] 注册开机自启服务并启动所有组件...${NC}"
