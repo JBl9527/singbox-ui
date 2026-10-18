@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Sing-Box WebUI Dashboard (sing-box 1.12 / 1.13 / 1.14+ & Sub-Store & LXC 容器全面兼容修复版)
+Sing-Box WebUI Dashboard (sing-box 1.14.3 旁路由透明网关 & FakeIP 防回环 & AnyTLS 终极修复版)
 轻量级、低功耗 CPU 友好型 Sing-box 管理面板与多格式订阅处理器
-核心修复:
-  1. 自动检测与修复 LXC / Docker 容器环境缺失 /dev/net/tun 导致启动崩溃:
-     - 启动前自动尝试加载 tun 模块并创建 /dev/net/tun 设备节点
-     - 若宿主机未映射 TUN 权限 (open /dev/net/tun 失败)，自动降级移除 tun 入站并清理 fakeip，
-       保留 Mixed (0.0.0.0:2080) 代理入站正常启动，绝不崩溃退出
-  2. 彻底解决 Sub-Store / Cloudflare 订阅拉取 500 报错:
-     - 内置 curl (强制 IPv4 + 忽略自签证书 + 绕过系统死锁代理 + 公共 DNS 兜底解析) 与 Python 双引擎拉取
-     - 智能识别 Sub-Store (/download/...) 链接，自动尝试 ?target=JSON / ClashMeta / URI / sing-box
-     - API 异常统一返回 HTTP 200 + 明确中文错误提示，防止前端弹出笼统的 HTTP Error 500
-  3. 彻底解决 AnyTLS 节点不加载与全节点测速超时:
-     - 支持 Sing-Box JSON、Sub-Store JSON、Clash/Mihomo YAML、Base64/明文 URI (anytls:// 等)
-     - 严格按照 sing-box 1.14 Schema 清洗节点字段，升级为 ThreadingHTTPServer 多线程并发测速
+核心特性与修复:
+  1. 彻底解决 TUN + FakeIP 下访问国外网站报 Connection reset by peer (Issue #2643 DNS 回环):
+     - 将直连默认解析器 "ali" 升级为 DoH (https://223.5.5.5/dns-query，端口 443)，彻底避开 Linux TUN
+       ip rule 9002 对 dport 53 的劫持，防止 sing-box 自身解析代理节点域名时被套入 FakeIP 回环
+     - 自动提取所有代理节点的 server 域名注入 dns.rules 第一条强制走 "ali" 真实 IP 解析，绝不分配 FakeIP
+     - route.rules 使用 logical OR (inbound=dns-in || protocol=dns || port=53) 优先劫持所有 DNS 请求，
+       避免发往主路由 192.168.x.1:53 的 DNS 请求落入 ip_is_private 直连导致 GFW 污染重置
+     - 启动/重启时自动清理旧 cache.db 中可能残留的错误 FakeIP 缓存
+  2. 旁路由 53 端口 DNS 监听 + 内核参数 (rp_filter=0) 与 iptables FORWARD/MASQUERADE 全自动配置
+  3. 完美支持 Sub-Store 订阅、AnyTLS 等全协议清洗及多线程并发测速
 """
 
 import os
@@ -40,14 +38,8 @@ import platform
 import subprocess
 import threading
 import argparse
-import mimetypes
 from http.server import HTTPServer, ThreadingHTTPServer, SimpleHTTPRequestHandler
 from collections import deque
-
-mimetypes.add_type("application/manifest+json", ".webmanifest")
-mimetypes.add_type("font/woff2", ".woff2")
-mimetypes.add_type("application/javascript", ".js")
-mimetypes.add_type("text/css", ".css")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -55,7 +47,6 @@ CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 PRESET_PATH = os.path.join(BASE_DIR, "templates", "preset_config.json")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 BIN_DIR = os.path.join(BASE_DIR, "bin")
-SUBS_PATH = os.path.join(DATA_DIR, "subscriptions.json")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(BIN_DIR, exist_ok=True)
@@ -75,339 +66,81 @@ def append_log(msg: str):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     LOG_BUFFER.append(f"[{timestamp}] {msg}")
 
-def remove_singbox_cache() -> int:
-    """
-    深度彻底清除 sing-box 产生的所有 SQLite 缓存数据库 (cache.db, cache.db-wal, cache.db-shm, cache.db-journal 等)
-    彻底杜绝 Clash API 历史残留节点、DNS 缓存污染与 Fake-IP 映射死锁。
-    """
-    targets = [
-        DATA_DIR,
-        BASE_DIR,
-        os.getcwd(),
-        "/opt/singbox-ui",
-        "/opt/singbox-ui/data",
-    ]
-    removed = []
-    seen_paths = set()
-    for d in targets:
-        if not os.path.isdir(d):
-            continue
-        try:
-            for fname in os.listdir(d):
-                if fname.startswith("cache.db") or fname == "cache.db":
-                    fpath = os.path.abspath(os.path.join(d, fname))
-                    if fpath in seen_paths:
-                        continue
-                    seen_paths.add(fpath)
-                    try:
-                        if os.path.isfile(fpath) or os.path.islink(fpath):
-                            os.remove(fpath)
-                            removed.append(fpath)
-                    except Exception as e:
-                        append_log(f"清理缓存文件异常 {fpath}: {e}")
-        except Exception:
-            pass
-    if removed:
-        append_log(f"已深度清理 {len(removed)} 个历史缓存数据库文件，消除旧节点残留")
-    return len(removed)
-
-def load_subscriptions() -> dict:
-    """读取保存的订阅列表与当前激活订阅"""
-    default_subs = {"active_id": "", "subscriptions": []}
-    if not os.path.exists(SUBS_PATH):
-        return default_subs
-    try:
-        with open(SUBS_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            if isinstance(data, dict):
-                data.setdefault("active_id", "")
-                data.setdefault("subscriptions", [])
-                return data
-    except Exception as e:
-        append_log(f"读取 subscriptions.json 异常: {e}")
-    return default_subs
-
-def save_subscriptions(data: dict):
-    """持久化保存订阅列表与当前激活订阅"""
-    try:
-        with open(SUBS_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        append_log(f"保存 subscriptions.json 异常: {e}")
-
-def detect_virtualization_env() -> dict:
-    """
-    智能检测当前操作系统运行环境 (LXC / Docker / Podman 容器 vs. KVM / VMware 虚拟机 vs. 物理宿主机)
-    """
+def ensure_tun_available() -> bool:
+    """检测当前 Linux / 容器环境是否具备可用的 /dev/net/tun 设备"""
     if os.name == "nt":
-        return {
-            "is_container": False,
-            "virt_type": "windows",
-            "desc": "Windows 系统"
-        }
-
-    is_container = False
-    virt_type = "baremetal"
-    desc = "物理宿主机 (Bare Metal)"
-
-    # 1. 优先使用 systemd-detect-virt
-    try:
-        res = subprocess.run(["systemd-detect-virt"], capture_output=True, text=True, timeout=2)
-        out = (res.stdout or "").strip().lower()
-        if out and out != "none":
-            virt_type = out
-            res_c = subprocess.run(["systemd-detect-virt", "-c"], capture_output=True, text=True, timeout=2)
-            if res_c.returncode == 0 or out in ("lxc", "lxc-libcontainer", "docker", "podman", "openvz", "container-other", "systemd-nspawn"):
-                is_container = True
-    except Exception:
-        pass
-
-    # 2. 备用检测: cgroup 与文件标志
-    if not is_container:
-        if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
-            is_container = True
-            virt_type = "docker" if os.path.exists("/.dockerenv") else "podman"
-        elif os.path.exists("/proc/1/environ"):
-            try:
-                with open("/proc/1/environ", "rb") as f:
-                    content = f.read().decode("utf-8", errors="ignore")
-                    if "container=lxc" in content:
-                        is_container = True
-                        virt_type = "lxc"
-                    elif "container=docker" in content:
-                        is_container = True
-                        virt_type = "docker"
-            except Exception:
-                pass
-
-        if not is_container and os.path.exists("/proc/1/cgroup"):
-            try:
-                with open("/proc/1/cgroup", "r", encoding="utf-8", errors="ignore") as f:
-                    cg = f.read().lower()
-                    if "lxc" in cg:
-                        is_container = True
-                        virt_type = "lxc"
-                    elif "docker" in cg:
-                        is_container = True
-                        virt_type = "docker"
-                    elif "libpod" in cg or "podman" in cg:
-                        is_container = True
-                        virt_type = "podman"
-            except Exception:
-                pass
-
-    if is_container:
-        if "lxc" in virt_type:
-            desc = "LXC 独立容器"
-        elif "docker" in virt_type:
-            desc = "Docker 容器"
-        elif "podman" in virt_type:
-            desc = "Podman 容器"
-        else:
-            desc = f"容器环境 ({virt_type})"
-    else:
-        if virt_type in ("kvm", "qemu", "bochs"):
-            desc = f"KVM 虚拟机 ({virt_type})"
-        elif virt_type in ("vmware", "oracle", "xen", "microsoft"):
-            desc = f"虚拟机 ({virt_type})"
-        elif virt_type not in ("baremetal", "none", ""):
-            desc = f"虚拟化系统 ({virt_type})"
-        else:
-            desc = "物理宿主机 (Bare Metal)"
-
-    return {
-        "is_container": is_container,
-        "virt_type": virt_type,
-        "desc": desc
-    }
-
-def ensure_tun_available_detailed() -> tuple[bool, str]:
-    """
-    智能检测并配置 Linux / 容器环境的 TUN 虚拟网卡设备。
-    若为容器环境则主动开启 mknod /dev/net/tun；
-    若为普通操作系统则检测有无，无则通过 modprobe 加载并安装配置；
-    返回 (is_available, status_message)
-    """
-    if os.name == "nt":
-        return True, "Windows 虚拟网卡支持正常"
-
-    env = detect_virtualization_env()
-    is_container = env["is_container"]
+        return True
     tun_path = "/dev/net/tun"
-
-    if is_container:
-        # 容器环境: 主动创建并开启 TUN 字符设备
+    if not os.path.exists(tun_path):
         try:
-            os.makedirs("/dev/net", exist_ok=True)
-            if not os.path.exists(tun_path):
-                subprocess.run(["mknod", tun_path, "c", "10", "200"], capture_output=True, timeout=2)
-            if os.path.exists(tun_path):
-                os.chmod(tun_path, 0o666)
+            subprocess.run(["modprobe", "tun"], capture_output=True, timeout=2)
         except Exception:
             pass
-    else:
-        # 正常系统: 检查有无，无则通过 modprobe 加载并写入开机模块配置
         if not os.path.exists(tun_path):
             try:
-                subprocess.run(["modprobe", "tun"], capture_output=True, timeout=2)
-            except Exception:
-                pass
-            if os.path.exists("/etc/modules-load.d") and not os.path.exists("/etc/modules-load.d/singbox-tun.conf"):
-                try:
-                    with open("/etc/modules-load.d/singbox-tun.conf", "w", encoding="utf-8") as f:
-                        f.write("tun\n")
-                except Exception:
-                    pass
-            try:
                 os.makedirs("/dev/net", exist_ok=True)
-                if not os.path.exists(tun_path):
-                    subprocess.run(["mknod", tun_path, "c", "10", "200"], capture_output=True, timeout=2)
-                if os.path.exists(tun_path):
-                    os.chmod(tun_path, 0o666)
+                subprocess.run(["mknod", tun_path, "c", "10", "200"], capture_output=True, timeout=2)
+                os.chmod(tun_path, 0o666)
             except Exception:
                 pass
 
     if not os.path.exists(tun_path):
-        if is_container:
-            return False, "容器内无 /dev/net/tun 设备，需宿主机添加直通"
-        return False, "系统缺失 /dev/net/tun 设备节点"
+        return False
 
     try:
         fd = os.open(tun_path, os.O_RDWR)
         os.close(fd)
-        return True, "TUN 虚拟网卡已就绪 (可读写)"
-    except PermissionError:
-        if is_container:
-            return False, "非特权容器权限限制: 需在 PVE 宿主机配置 lxc.cgroup2.devices.allow 与 lxc.mount.entry"
-        return False, "TUN 设备权限不足 (无法打开 /dev/net/tun)"
-    except Exception as e:
-        return False, f"TUN 打开异常: {e}"
+        return True
+    except Exception:
+        return False
 
-def ensure_tun_available() -> bool:
-    """原有接口保持兼容，返回布尔值"""
-    ok, _ = ensure_tun_available_detailed()
-    return ok
-
-def configure_gateway_networking():
+def setup_gateway_network():
     """
-    全自动配置 Linux 底层内核 IP 转发、关闭 rp_filter 反向路径过滤与 ICMP 重定向、
-    放行 iptables FORWARD 链并配置物理网卡 NAT MASQUERADE 与 DNS 重定向，
-    彻底解决旁路由网关模式下局域网设备无法转发 IP、DNS 失联与 MetaCubeX 抓不到数据的问题。
+    自动配置 Linux 单臂旁路由 / 透明网关底层内核参数与防火墙转发规则
     """
     if os.name == "nt":
         return
+    sysctl_pairs = [
+        "net.ipv4.ip_forward=1",
+        "net.ipv4.conf.all.forwarding=1",
+        "net.ipv4.conf.default.forwarding=1",
+        "net.ipv4.conf.all.rp_filter=0",
+        "net.ipv4.conf.default.rp_filter=0",
+        "net.ipv4.conf.tun0.rp_filter=0",
+        "net.ipv4.conf.all.send_redirects=0",
+        "net.ipv4.conf.default.send_redirects=0",
+    ]
+    for kv in sysctl_pairs:
+        try:
+            subprocess.run(["sysctl", "-w", kv], capture_output=True, timeout=2)
+        except Exception:
+            pass
 
+    main_iface = ""
     try:
-        # 1. 开启内核转发与关闭 rp_filter 反向路径过滤及 send_redirects 重定向 (防止丢弃旁路由非对称包及误导客户端)
-        sysctl_cmd = [
-            "sysctl", "-w",
-            "net.ipv4.ip_forward=1",
-            "net.ipv4.conf.all.forwarding=1",
-            "net.ipv4.conf.default.forwarding=1",
-            "net.ipv6.conf.all.forwarding=1",
-            "net.ipv6.conf.default.forwarding=1",
-            "net.ipv4.conf.all.rp_filter=0",
-            "net.ipv4.conf.default.rp_filter=0",
-            "net.ipv4.conf.all.send_redirects=0",
-            "net.ipv4.conf.default.send_redirects=0",
-            "net.ipv4.conf.all.route_localnet=1"
-        ]
-        subprocess.run(sysctl_cmd, capture_output=True, timeout=3)
+        res = subprocess.run(["ip", "-4", "route", "show", "table", "main", "default"], capture_output=True, text=True, timeout=2)
+        m = re.search(r"\bdev\s+(\S+)", res.stdout)
+        if m:
+            main_iface = m.group(1)
     except Exception:
         pass
 
-    try:
-        if os.path.exists("/proc/sys/net/ipv4/conf"):
-            for entry in os.listdir("/proc/sys/net/ipv4/conf"):
-                for prop in ("rp_filter", "send_redirects"):
-                    p_file = f"/proc/sys/net/ipv4/conf/{entry}/{prop}"
-                    if os.path.isfile(p_file):
-                        try:
-                            with open(p_file, "w") as f:
-                                f.write("0\n")
-                        except Exception:
-                            pass
-    except Exception:
-        pass
+    if main_iface:
+        try:
+            subprocess.run(["sysctl", "-w", f"net.ipv4.conf.{main_iface}.rp_filter=0"], capture_output=True, timeout=2)
+            subprocess.run(["sysctl", "-w", f"net.ipv4.conf.{main_iface}.send_redirects=0"], capture_output=True, timeout=2)
+        except Exception:
+            pass
 
-    try:
-        # 2. 检查并释放 systemd-resolved 对 53 端口的独占监听，保障 sing-box 0.0.0.0:53 (dns-in) 顺利启动
-        chk_53 = subprocess.run(["ss", "-lnup"], capture_output=True, text=True, timeout=2).stdout
-        if ":53 " in chk_53 and "systemd-resolve" in chk_53:
-            res_conf = "/etc/systemd/resolved.conf"
-            if os.path.isfile(res_conf):
-                try:
-                    with open(res_conf, "r", encoding="utf-8", errors="ignore") as rf:
-                        rc_content = rf.read()
-                    if "DNSStubListener=no" not in rc_content:
-                        import re
-                        new_rc = re.sub(r"^#?DNSStubListener=.*", "DNSStubListener=no", rc_content, flags=re.MULTILINE)
-                        if "DNSStubListener=no" not in new_rc:
-                            new_rc += "\nDNSStubListener=no\n"
-                        with open(res_conf, "w", encoding="utf-8") as wf:
-                            wf.write(new_rc)
-                        subprocess.run(["systemctl", "restart", "systemd-resolved"], capture_output=True, timeout=3)
-                except Exception:
-                    pass
-            if os.path.islink("/etc/resolv.conf"):
-                try:
-                    os.unlink("/etc/resolv.conf")
-                    with open("/etc/resolv.conf", "w") as f:
-                        f.write("nameserver 223.5.5.5\nnameserver 119.29.29.29\n")
-                except Exception:
-                    pass
-    except Exception:
-        pass
-
-    try:
-        # 3. iptables 放行 FORWARD 链所有转发包与 tun0 接口
-        for cmd in [
-            ["iptables", "-P", "FORWARD", "ACCEPT"],
-            ["iptables", "-I", "FORWARD", "-j", "ACCEPT"],
-            ["iptables", "-I", "FORWARD", "-i", "tun0", "-j", "ACCEPT"],
-            ["iptables", "-I", "FORWARD", "-o", "tun0", "-j", "ACCEPT"],
-        ]:
-            subprocess.run(cmd, capture_output=True, timeout=2)
-
-        # 4. 兼容 Docker 运行环境中的 DOCKER-USER 链
-        chk_docker = subprocess.run(["iptables", "-L", "DOCKER-USER"], capture_output=True, timeout=2)
-        if chk_docker.returncode == 0:
-            subprocess.run(["iptables", "-I", "DOCKER-USER", "-i", "tun0", "-j", "ACCEPT"], capture_output=True, timeout=2)
-            subprocess.run(["iptables", "-I", "DOCKER-USER", "-o", "tun0", "-j", "ACCEPT"], capture_output=True, timeout=2)
-            subprocess.run(["iptables", "-I", "DOCKER-USER", "-j", "ACCEPT"], capture_output=True, timeout=2)
-
-        # 5. 获取默认物理出口网卡 (如 eth0, ens18, enp3s0 等) 并添加 MASQUERADE
-        route_proc = subprocess.run(["ip", "route", "show", "default"], capture_output=True, text=True, timeout=2)
-        phys_dev = ""
-        for line in route_proc.stdout.splitlines():
-            parts = line.split()
-            if "dev" in parts:
-                idx = parts.index("dev")
-                if idx + 1 < len(parts) and parts[idx + 1] != "tun0":
-                    phys_dev = parts[idx + 1]
-                    break
-        if phys_dev:
-            chk_nat = subprocess.run(["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", phys_dev, "-j", "MASQUERADE"], capture_output=True, timeout=2)
-            if chk_nat.returncode != 0:
-                subprocess.run(["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", phys_dev, "-j", "MASQUERADE"], capture_output=True, timeout=2)
-
-            # 核心策略路由: 将物理网卡进入的所有局域网转发流量定向至 table 2022 (tun0)
-            # 无论客户端访问任何 IP，100% 捕获进 tun0 并呈现于 MetaCubeX 监控仪表盘
-            try:
-                chk_rule = subprocess.run(["ip", "rule", "show"], capture_output=True, text=True, timeout=2).stdout
-                if f"iif {phys_dev} lookup 2022" not in chk_rule:
-                    subprocess.run(["ip", "rule", "add", "iif", phys_dev, "table", "2022", "pref", "15000"], capture_output=True, timeout=2)
-            except Exception:
-                pass
-
-        # 6. DNS 53 端口重定向至本地 53 端口 (sing-box dns-in direct 53 端口)
-        # 无论客户端 DNS 是写本机 IP 还是 8.8.8.8，强制直达 sing-box 内核 hijack-dns，彻底解决端口 53 拒绝访问问题
-        for proto in ("udp", "tcp"):
-            chk_redir = subprocess.run(["iptables", "-t", "nat", "-C", "PREROUTING", "-p", proto, "--dport", "53", "-j", "REDIRECT", "--to-ports", "53"], capture_output=True, timeout=2)
-            if chk_redir.returncode != 0:
-                subprocess.run(["iptables", "-t", "nat", "-I", "PREROUTING", "-p", proto, "--dport", "53", "-j", "REDIRECT", "--to-ports", "53"], capture_output=True, timeout=2)
-    except Exception:
-        pass
+    if shutil.which("iptables"):
+        try:
+            subprocess.run(["iptables", "-P", "FORWARD", "ACCEPT"], capture_output=True, timeout=2)
+            if main_iface:
+                chk = subprocess.run(["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", main_iface, "-j", "MASQUERADE"], capture_output=True, timeout=2)
+                if chk.returncode != 0:
+                    subprocess.run(["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", main_iface, "-j", "MASQUERADE"], capture_output=True, timeout=2)
+        except Exception:
+            pass
 
 VALID_PROXY_TYPES = {
     "anytls", "vless", "vmess", "shadowsocks", "trojan", "hysteria", "hysteria2",
@@ -424,7 +157,6 @@ TYPE_ALIASES = {
     "https": "http",
 }
 
-# sing-box 通用拨号字段白名单 (Dial Fields)
 COMMON_DIAL_FIELDS = {
     "detour", "bind_interface", "inet4_bind_address", "inet6_bind_address",
     "routing_mark", "reuse_addr", "connect_timeout", "tcp_fast_open",
@@ -432,7 +164,6 @@ COMMON_DIAL_FIELDS = {
     "network_type", "fallback_network_type", "fallback_delay"
 }
 
-# 各协议在 sing-box 1.14 中的严格字段白名单 (防止 Sub-Store / Clash 附加字段触发 unknown field 报错)
 ALLOWED_OUTBOUND_FIELDS = {
     "anytls": {
         "type", "tag", "server", "server_port", "password",
@@ -480,7 +211,19 @@ ALLOWED_OUTBOUND_FIELDS = {
     } | COMMON_DIAL_FIELDS,
 }
 
-# 内置 sing-box 1.14.3 标准预设模板
+CN_DOMAIN_SUFFIXES = [
+    ".cn", ".baidu.com", ".qq.com", ".weixin.qq.com", ".wechat.com",
+    ".taobao.com", ".tmall.com", ".alicdn.com", ".aliyun.com", ".alipay.com",
+    ".jd.com", ".360buyimg.com", ".163.com", ".126.com", ".126.net", ".127.net",
+    ".bilibili.com", ".hdslb.com", ".biliapi.net", ".douyin.com", ".bytedance.com",
+    ".weibo.com", ".sina.com.cn", ".mi.com", ".xiaomi.com", ".zhihu.com",
+    ".csdn.net", ".meituan.com", ".dianping.com", ".pinduoduo.com",
+    ".ipip.net", ".cip.cc", ".10010.com", ".189.cn", ".10086.cn",
+    ".ghfast.top", ".ghproxy.net"
+]
+
+# 内置 sing-box 1.14.3 标准旁路由预设模板
+# 关键设计: "ali" 使用 https (DoH 443端口)，彻底避开 TUN 对 UDP 53 端口的自动劫持回环 (Issue #2643)
 DEFAULT_PRESET_CONFIG = {
     "log": {
         "level": "info",
@@ -495,21 +238,24 @@ DEFAULT_PRESET_CONFIG = {
         },
         "clash_api": {
             "external_controller": "0.0.0.0:9090",
-            "external_ui": "ui",
             "default_mode": "Rule"
         }
     },
     "dns": {
         "servers": [
             {
-                "type": "udp",
+                "type": "https",
                 "tag": "ali",
                 "server": "223.5.5.5",
-                "server_port": 53
+                "server_port": 443,
+                "path": "/dns-query"
             },
             {
-                "type": "local",
-                "tag": "local"
+                "type": "https",
+                "tag": "dnspod",
+                "server": "1.12.12.12",
+                "server_port": 443,
+                "path": "/dns-query"
             },
             {
                 "type": "https",
@@ -529,17 +275,12 @@ DEFAULT_PRESET_CONFIG = {
         ],
         "rules": [
             {
-                "domain_suffix": [
-                    ".cn", ".baidu.com", ".qq.com", ".taobao.com", ".tmall.com",
-                    ".alicdn.com", ".aliyun.com", ".jd.com", ".163.com", ".126.com",
-                    ".bilibili.com", ".hdslb.com", ".douyin.com", ".weibo.com",
-                    ".wechat.com", ".weixin.qq.com", ".mi.com", ".xiaomi.com"
-                ],
+                "rule_set": ["geosite-cn"],
                 "action": "route",
                 "server": "ali"
             },
             {
-                "rule_set": ["geosite-cn"],
+                "domain_suffix": CN_DOMAIN_SUFFIXES,
                 "action": "route",
                 "server": "ali"
             },
@@ -575,220 +316,15 @@ DEFAULT_PRESET_CONFIG = {
             "mtu": 1500,
             "auto_route": True,
             "strict_route": False,
-            "stack": "mixed",
-            "endpoint_independent_nat": True
+            "stack": "system"
         }
     ],
     "outbounds": [
         {
             "type": "selector",
             "tag": "默认代理",
-            "outbounds": [
-                "自动选择",
-                "香港自动", "香港手动",
-                "日本自动", "日本手动",
-                "狮城自动", "狮城手动",
-                "美国自动", "美国手动",
-                "台湾自动", "台湾手动",
-                "直连"
-            ],
+            "outbounds": ["自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动", "直连"],
             "default": "自动选择"
-        },
-        {
-            "type": "selector",
-            "tag": "AI",
-            "outbounds": [
-                "默认代理", "自动选择",
-                "香港自动", "香港手动",
-                "日本自动", "日本手动",
-                "狮城自动", "狮城手动",
-                "美国自动", "美国手动",
-                "台湾自动", "台湾手动",
-                "直连"
-            ],
-            "default": "默认代理"
-        },
-        {
-            "type": "selector",
-            "tag": "YouTube",
-            "outbounds": [
-                "默认代理", "自动选择",
-                "香港自动", "香港手动",
-                "日本自动", "日本手动",
-                "狮城自动", "狮城手动",
-                "美国自动", "美国手动",
-                "台湾自动", "台湾手动",
-                "直连"
-            ],
-            "default": "默认代理"
-        },
-        {
-            "type": "selector",
-            "tag": "Google",
-            "outbounds": [
-                "默认代理", "自动选择",
-                "香港自动", "香港手动",
-                "日本自动", "日本手动",
-                "狮城自动", "狮城手动",
-                "美国自动", "美国手动",
-                "台湾自动", "台湾手动",
-                "直连"
-            ],
-            "default": "默认代理"
-        },
-        {
-            "type": "selector",
-            "tag": "Github",
-            "outbounds": [
-                "默认代理", "自动选择",
-                "香港自动", "香港手动",
-                "日本自动", "日本手动",
-                "狮城自动", "狮城手动",
-                "美国自动", "美国手动",
-                "台湾自动", "台湾手动",
-                "直连"
-            ],
-            "default": "默认代理"
-        },
-        {
-            "type": "selector",
-            "tag": "Telegram",
-            "outbounds": [
-                "默认代理", "自动选择",
-                "香港自动", "香港手动",
-                "日本自动", "日本手动",
-                "狮城自动", "狮城手动",
-                "美国自动", "美国手动",
-                "台湾自动", "台湾手动",
-                "直连"
-            ],
-            "default": "默认代理"
-        },
-        {
-            "type": "selector",
-            "tag": "TikTok",
-            "outbounds": [
-                "默认代理", "自动选择",
-                "香港自动", "香港手动",
-                "日本自动", "日本手动",
-                "狮城自动", "狮城手动",
-                "美国自动", "美国手动",
-                "台湾自动", "台湾手动",
-                "直连"
-            ],
-            "default": "默认代理"
-        },
-        {
-            "type": "selector",
-            "tag": "Netflix",
-            "outbounds": [
-                "默认代理", "自动选择",
-                "香港自动", "香港手动",
-                "日本自动", "日本手动",
-                "狮城自动", "狮城手动",
-                "美国自动", "美国手动",
-                "台湾自动", "台湾手动",
-                "直连"
-            ],
-            "default": "默认代理"
-        },
-        {
-            "type": "selector",
-            "tag": "Steam",
-            "outbounds": [
-                "默认代理", "自动选择",
-                "香港自动", "香港手动",
-                "日本自动", "日本手动",
-                "狮城自动", "狮城手动",
-                "美国自动", "美国手动",
-                "台湾自动", "台湾手动",
-                "直连"
-            ],
-            "default": "默认代理"
-        },
-        {
-            "type": "selector",
-            "tag": "OneDrive",
-            "outbounds": [
-                "默认代理", "自动选择",
-                "香港自动", "香港手动",
-                "日本自动", "日本手动",
-                "狮城自动", "狮城手动",
-                "美国自动", "美国手动",
-                "台湾自动", "台湾手动",
-                "直连"
-            ],
-            "default": "默认代理"
-        },
-        {
-            "type": "selector",
-            "tag": "Microsoft",
-            "outbounds": [
-                "默认代理", "自动选择",
-                "香港自动", "香港手动",
-                "日本自动", "日本手动",
-                "狮城自动", "狮城手动",
-                "美国自动", "美国手动",
-                "台湾自动", "台湾手动",
-                "直连"
-            ],
-            "default": "默认代理"
-        },
-        {
-            "type": "selector",
-            "tag": "Apple",
-            "outbounds": [
-                "默认代理", "自动选择",
-                "香港自动", "香港手动",
-                "日本自动", "日本手动",
-                "狮城自动", "狮城手动",
-                "美国自动", "美国手动",
-                "台湾自动", "台湾手动",
-                "直连"
-            ],
-            "default": "默认代理"
-        },
-        {
-            "type": "selector",
-            "tag": "Emby",
-            "outbounds": [
-                "默认代理", "自动选择",
-                "香港自动", "香港手动",
-                "日本自动", "日本手动",
-                "狮城自动", "狮城手动",
-                "美国自动", "美国手动",
-                "台湾自动", "台湾手动",
-                "直连"
-            ],
-            "default": "默认代理"
-        },
-        {
-            "type": "selector",
-            "tag": "Wallet",
-            "outbounds": [
-                "默认代理", "自动选择",
-                "香港自动", "香港手动",
-                "日本自动", "日本手动",
-                "狮城自动", "狮城手动",
-                "美国自动", "美国手动",
-                "台湾自动", "台湾手动",
-                "直连"
-            ],
-            "default": "默认代理"
-        },
-        {
-            "type": "selector",
-            "tag": "漏网之鱼",
-            "outbounds": [
-                "默认代理", "自动选择",
-                "香港自动", "香港手动",
-                "日本自动", "日本手动",
-                "狮城自动", "狮城手动",
-                "美国自动", "美国手动",
-                "台湾自动", "台湾手动",
-                "直连"
-            ],
-            "default": "默认代理"
         },
         {
             "type": "urltest",
@@ -813,24 +349,12 @@ DEFAULT_PRESET_CONFIG = {
             "tolerance": 50
         },
         {
-            "type": "selector",
-            "tag": "香港手动",
-            "outbounds": ["直连"],
-            "default": "直连"
-        },
-        {
             "type": "urltest",
             "tag": "日本自动",
             "outbounds": ["直连"],
             "url": "http://www.gstatic.com/generate_204",
             "interval": "5m",
             "tolerance": 50
-        },
-        {
-            "type": "selector",
-            "tag": "日本手动",
-            "outbounds": ["直连"],
-            "default": "直连"
         },
         {
             "type": "urltest",
@@ -841,24 +365,12 @@ DEFAULT_PRESET_CONFIG = {
             "tolerance": 50
         },
         {
-            "type": "selector",
-            "tag": "狮城手动",
-            "outbounds": ["直连"],
-            "default": "直连"
-        },
-        {
             "type": "urltest",
             "tag": "美国自动",
             "outbounds": ["直连"],
             "url": "http://www.gstatic.com/generate_204",
             "interval": "5m",
             "tolerance": 50
-        },
-        {
-            "type": "selector",
-            "tag": "美国手动",
-            "outbounds": ["直连"],
-            "default": "直连"
         },
         {
             "type": "urltest",
@@ -869,12 +381,6 @@ DEFAULT_PRESET_CONFIG = {
             "tolerance": 50
         },
         {
-            "type": "selector",
-            "tag": "台湾手动",
-            "outbounds": ["直连"],
-            "default": "直连"
-        },
-        {
             "type": "direct",
             "tag": "直连"
         }
@@ -882,18 +388,18 @@ DEFAULT_PRESET_CONFIG = {
     "route": {
         "auto_detect_interface": True,
         "default_domain_resolver": "ali",
-        "final": "漏网之鱼",
+        "final": "默认代理",
         "rule_set": [
             {
-                "tag": "geosite-cn",
                 "type": "remote",
+                "tag": "geosite-cn",
                 "format": "binary",
                 "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
                 "download_detour": "直连"
             },
             {
-                "tag": "geoip-cn",
                 "type": "remote",
+                "tag": "geoip-cn",
                 "format": "binary",
                 "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
                 "download_detour": "直连"
@@ -904,15 +410,13 @@ DEFAULT_PRESET_CONFIG = {
                 "action": "sniff"
             },
             {
-                "protocol": "dns",
-                "action": "hijack-dns"
-            },
-            {
-                "port": 53,
-                "action": "hijack-dns"
-            },
-            {
-                "inbound": ["dns-in"],
+                "type": "logical",
+                "mode": "or",
+                "rules": [
+                    {"inbound": ["dns-in"]},
+                    {"protocol": "dns"},
+                    {"port": 53}
+                ],
                 "action": "hijack-dns"
             },
             {
@@ -920,68 +424,7 @@ DEFAULT_PRESET_CONFIG = {
                 "outbound": "直连"
             },
             {
-                "domain_suffix": [
-                    "openai.com", "chatgpt.com", "anthropic.com", "claude.ai",
-                    "oaistatic.com", "oaiusercontent.com", "groq.com", "mistral.ai",
-                    "cohere.ai", "perplexity.ai"
-                ],
-                "outbound": "AI"
-            },
-            {
-                "domain_suffix": ["youtube.com", "googlevideo.com", "ytimg.com", "youtu.be"],
-                "outbound": "YouTube"
-            },
-            {
-                "domain_suffix": ["google.com", "googleapis.com", "gstatic.com", "googleusercontent.com"],
-                "outbound": "Google"
-            },
-            {
-                "domain_suffix": ["github.com", "githubassets.com", "githubusercontent.com"],
-                "outbound": "Github"
-            },
-            {
-                "domain_suffix": ["telegram.org", "t.me", "telegra.ph", "tdesktop.com"],
-                "outbound": "Telegram"
-            },
-            {
-                "domain_suffix": ["tiktok.com", "byteoversea.com", "ibytedtos.com"],
-                "outbound": "TikTok"
-            },
-            {
-                "domain_suffix": ["netflix.com", "nflxvideo.net", "nflxext.com", "nflxso.net"],
-                "outbound": "Netflix"
-            },
-            {
-                "domain_suffix": ["steampowered.com", "steamcommunity.com", "steamgames.com", "steamstatic.com"],
-                "outbound": "Steam"
-            },
-            {
-                "domain_suffix": ["onedrive.live.com", "1drv.ms", "sharepoint.com"],
-                "outbound": "OneDrive"
-            },
-            {
-                "domain_suffix": ["microsoft.com", "live.com", "office.com", "azure.com", "bing.com", "msn.com"],
-                "outbound": "Microsoft"
-            },
-            {
-                "domain_suffix": ["apple.com", "icloud.com", "aaplimg.com", "apple-cloudkit.com"],
-                "outbound": "Apple"
-            },
-            {
-                "domain_suffix": ["as174.de", "xmsl.org", "69yun69.com", "emby.wtf", "embymv.link", "gidd.tv", "emby.moe"],
-                "outbound": "Emby"
-            },
-            {
-                "domain_suffix": ["paypal.com", "binance.com", "okx.com"],
-                "outbound": "Wallet"
-            },
-            {
-                "domain_suffix": [
-                    ".cn", ".baidu.com", ".qq.com", ".taobao.com", ".tmall.com",
-                    ".alicdn.com", ".aliyun.com", ".jd.com", ".163.com", ".126.com",
-                    ".bilibili.com", ".hdslb.com", ".douyin.com", ".weibo.com",
-                    ".wechat.com", ".weixin.qq.com", ".mi.com", ".xiaomi.com"
-                ],
+                "domain_suffix": CN_DOMAIN_SUFFIXES,
                 "outbound": "直连"
             },
             {
@@ -1270,6 +713,16 @@ def migrate_legacy_dns_server(srv: dict, fakeip_cfg: dict):
         else:
             s.pop("address_resolver", None)
 
+    # 关键升级: 将直连 223.5.5.5 的 UDP 53 升级为 HTTPS (DoH 443)，防止被 TUN dport 53 规则劫持形成回环
+    if s.get("server") == "223.5.5.5" and s.get("type") in ("udp", "tcp", None) and not s.get("detour"):
+        return {
+            "type": "https",
+            "tag": tag or "ali",
+            "server": "223.5.5.5",
+            "server_port": 443,
+            "path": "/dns-query"
+        }, None
+
     if "type" in s and "address" not in s:
         stype = str(s["type"]).lower()
         s["type"] = stype
@@ -1330,6 +783,14 @@ def migrate_legacy_dns_server(srv: dict, fakeip_cfg: dict):
         if scheme in ("https", "h3") and path and path != "/":
             s["path"] = path
     else:
+        if addr in ("223.5.5.5", "223.6.6.6"):
+            return {
+                "type": "https",
+                "tag": tag or "ali",
+                "server": addr,
+                "server_port": 443,
+                "path": "/dns-query"
+            }, None
         s["type"] = s.get("type", "udp").lower()
         if ":" in addr and not is_ip_address(addr):
             host, _, port_str = addr.rpartition(":")
@@ -1346,16 +807,17 @@ def migrate_legacy_dns_server(srv: dict, fakeip_cfg: dict):
 
     return s, None
 
-def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disable_auto_redirect: bool = False):
-    """全面清理与修复配置，100% 适配 sing-box 1.12 / 1.13 / 1.14.3 及无 TUN 容器环境"""
+def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False):
+    """全面清理与修复配置，彻底解决 TUN + FakeIP 下的 DNS 回环重置问题"""
     if not isinstance(cfg_dict, dict):
         return cfg_dict
 
     tun_supported = False if force_disable_tun else ensure_tun_available()
 
-    # --- 1. 修复 Inbounds (根据系统环境自动配置 TUN 旁路由 auto_redirect 与转发) ---
+    # --- 1. 修复 Inbounds ---
     has_tun = False
-    tun_tags = set()
+    has_dns_in = False
+    inbound_tags_for_fakeip = []
     clean_inbounds = []
 
     for ib in cfg_dict.get("inbounds", []):
@@ -1368,25 +830,20 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
         ib.pop("domain_strategy", None)
         ib.pop("udp_fragment", None)
 
-        ib_type = ib.get("type")
-        ib_tag = ib.get("tag") or ""
+        if ib.get("type") == "direct" and ib.get("listen_port") in (53, 5353):
+            has_dns_in = True
+            ib_tag = ib.get("tag") or "dns-in"
+            ib["tag"] = ib_tag
+            inbound_tags_for_fakeip.append(ib_tag)
 
-        if ib_type == "tun":
+        if ib.get("type") == "tun":
             if not tun_supported:
                 continue
             has_tun = True
-            ib_tag = ib_tag or "tun-in"
+            ib_tag = ib.get("tag") or "tun-in"
             ib["tag"] = ib_tag
-            tun_tags.add(ib_tag)
+            inbound_tags_for_fakeip.append(ib_tag)
             ib.pop("gso", None)
-            ib["auto_route"] = True
-            ib.pop("auto_redirect", None)
-            ib["strict_route"] = False
-            ib["endpoint_independent_nat"] = True
-            if ib.get("stack") not in ("mixed", "gvisor"):
-                ib["stack"] = "mixed"
-            if not ib.get("mtu") or ib.get("mtu", 0) < 1400:
-                ib["mtu"] = 1500
             if "inet4_address" in ib:
                 val = ib.pop("inet4_address")
                 if "address" not in ib:
@@ -1413,44 +870,21 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
                         ib[new_k].extend(v)
                     elif isinstance(v, str):
                         ib[new_k].append(v)
-            clean_inbounds.append(ib)
-        elif ib_type == "direct" and (ib.get("listen_port") == 53 or ib_tag == "dns-in"):
-            ib["type"] = "direct"
-            ib["tag"] = "dns-in"
-            ib["listen"] = "0.0.0.0"
-            ib["listen_port"] = 53
-            clean_inbounds.append(ib)
-        else:
-            clean_inbounds.append(ib)
 
-    # 核心保障 1: 自动注入 direct 0.0.0.0:53 (dns-in)，接管局域网设备直接发送到旁路由本机的 DNS 查询
-    has_dns_in = any(ib.get("tag") == "dns-in" or (ib.get("type") == "direct" and ib.get("listen_port") == 53) for ib in clean_inbounds)
-    if not has_dns_in:
+        clean_inbounds.append(ib)
+
+    if has_tun and not has_dns_in:
         clean_inbounds.insert(0, {
             "type": "direct",
             "tag": "dns-in",
             "listen": "0.0.0.0",
             "listen_port": 53
         })
+        has_dns_in = True
+        if "dns-in" not in inbound_tags_for_fakeip:
+            inbound_tags_for_fakeip.append("dns-in")
 
-    # 核心保障 2: 只要系统支持 TUN (/dev/net/tun 可用)，若当前配置缺失 TUN 入站，则强制自动注入标准 tun0！
-    # 彻底杜绝此前因为历史配置被误清空 TUN 导致无法创建 tun0 网卡和 table 2022 的问题
-    if tun_supported and not has_tun:
-        clean_inbounds.append({
-            "type": "tun",
-            "tag": "tun-in",
-            "interface_name": "tun0",
-            "address": ["172.19.0.1/30"],
-            "mtu": 1500,
-            "auto_route": True,
-            "strict_route": False,
-            "stack": "mixed",
-            "endpoint_independent_nat": True
-        })
-        has_tun = True
-        tun_tags.add("tun-in")
-
-    if not clean_inbounds:
+    if not any(ib.get("type") == "mixed" for ib in clean_inbounds):
         clean_inbounds.append({
             "type": "mixed",
             "tag": "mixed-in",
@@ -1459,11 +893,13 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
         })
 
     cfg_dict["inbounds"] = clean_inbounds
+    valid_inbound_tags = {ib.get("tag") for ib in clean_inbounds if ib.get("tag")}
 
-    # --- 2. 净化 Outbounds ---
+    # --- 2. 净化 Outbounds 并收集所有代理节点的服务器域名 (防止代理节点域名被 FakeIP 污染) ---
     valid_outbounds = []
     valid_tags = set()
     proxy_tags = []
+    proxy_server_domains = set()
     removed_dns_tags = {"dns", "dns-out"}
     removed_block_tags = {"block", "block-out", "拒绝"}
     direct_tag = None
@@ -1520,6 +956,9 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
                 valid_outbounds.append(norm_ob)
                 valid_tags.add(norm_ob["tag"])
                 proxy_tags.append(norm_ob["tag"])
+                srv_host = str(norm_ob.get("server", "")).strip()
+                if srv_host and not is_ip_address(srv_host):
+                    proxy_server_domains.add(srv_host.lower())
 
     if direct_tag is None:
         direct_tag = "直连"
@@ -1588,7 +1027,7 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
         next((ob["tag"] for ob in valid_outbounds if ob.get("type") in ("selector", "urltest")), direct_tag)
     )
 
-    # --- 3. 修复 DNS 配置 (适配 1.14.0 严格校验与无 TUN 模式) ---
+    # --- 3. 修复 DNS 配置 (DoH 443 防回环 + 代理节点域名白名单直连解析) ---
     dns_cfg = cfg_dict.get("dns")
     if not isinstance(dns_cfg, dict):
         dns_cfg = json.loads(json.dumps(DEFAULT_PRESET_CONFIG["dns"]))
@@ -1597,6 +1036,7 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
     legacy_fakeip = dns_cfg.pop("fakeip", None)
     fakeip_cfg = legacy_fakeip if isinstance(legacy_fakeip, dict) else {}
     dns_cfg.pop("independent_cache", None)
+    dns_cfg["strategy"] = "ipv4_only"
 
     raw_servers = dns_cfg.get("servers", [])
     if not isinstance(raw_servers, list):
@@ -1620,7 +1060,6 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
                 migrated_srv["tag"] = stag
             if migrated_srv.get("type") == "fakeip":
                 if not has_tun:
-                    # 无 TUN 模式下禁用 fakeip，防止返回 198.18.x.x 导致无法连接
                     fakeip_server_tags.add(stag)
                     continue
                 fakeip_server_tags.add(stag)
@@ -1628,10 +1067,10 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
                 migrated_srv["detour"] = main_proxy_tag
             new_servers.append(migrated_srv)
             dns_server_tags.add(stag)
-            if direct_dns_tag is None and migrated_srv.get("type") in ("udp", "tcp", "local") and not migrated_srv.get("detour"):
+            if direct_dns_tag is None and migrated_srv.get("type") in ("https", "tls", "udp", "tcp") and not migrated_srv.get("detour") and is_ip_address(str(migrated_srv.get("server", ""))):
                 direct_dns_tag = stag
 
-    if has_tun and fakeip_cfg.get("enabled") and not any(s.get("type") == "fakeip" for s in new_servers):
+    if has_tun and (fakeip_cfg.get("enabled") or not fakeip_server_tags) and not any(s.get("type") == "fakeip" for s in new_servers):
         new_servers.append({
             "type": "fakeip",
             "tag": "fakeip",
@@ -1642,12 +1081,13 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
         fakeip_server_tags.add("fakeip")
 
     if direct_dns_tag is None:
-        direct_dns_tag = "ali" if "ali" not in dns_server_tags else "local-direct"
+        direct_dns_tag = "ali" if "ali" not in dns_server_tags else "ali-doh"
         new_servers.insert(0, {
-            "type": "udp",
+            "type": "https",
             "tag": direct_dns_tag,
             "server": "223.5.5.5",
-            "server_port": 53
+            "server_port": 443,
+            "path": "/dns-query"
         })
         dns_server_tags.add(direct_dns_tag)
 
@@ -1660,57 +1100,7 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
 
     dns_cfg["servers"] = new_servers
 
-    if "rules" in dns_cfg and isinstance(dns_cfg["rules"], list):
-        clean_dns_rules = []
-        for r in dns_cfg["rules"]:
-            if not isinstance(r, dict):
-                continue
-            if "outbound" in r:
-                continue
-            r = dict(r)
-            r.pop("geosite", None)
-            r.pop("geoip", None)
-            r.pop("rule_set_ip_cidr_accept_empty", None)
-            r.pop("rule_set_ipcidr_match_source", None)
-            if not r.get("match_response"):
-                r.pop("ip_cidr", None)
-                r.pop("ip_is_private", None)
-                if "rule_set" in r:
-                    rs_v = r["rule_set"]
-                    if isinstance(rs_v, str) and "geoip" in rs_v.lower():
-                        r.pop("rule_set", None)
-                    elif isinstance(rs_v, list):
-                        r["rule_set"] = [x for x in rs_v if "geoip" not in str(x).lower()]
-                        if not r["rule_set"]:
-                            r.pop("rule_set", None)
-
-            srv_target = r.get("server", "")
-            if srv_target in fakeip_server_tags:
-                if not has_tun:
-                    continue
-                # 有 TUN 时，确保 fakeip 规则作用于 tun 入站与 dns-in 局域网入站
-                fakeip_ib = set(tun_tags)
-                fakeip_ib.add("dns-in")
-                r["inbound"] = sorted(list(fakeip_ib))
-            elif srv_target in removed_rcode_tags or str(srv_target).startswith("rcode://"):
-                r.pop("server", None)
-                r["action"] = "reject"
-            elif srv_target and srv_target not in dns_server_tags:
-                r["server"] = direct_dns_tag
-
-            match_keys = set(r.keys()) - {"action", "server", "disable_cache", "rewrite_ttl", "client_subnet", "strategy", "method", "rcode"}
-            if match_keys:
-                clean_dns_rules.append(r)
-        dns_cfg["rules"] = clean_dns_rules
-
-    if dns_cfg.get("final") not in dns_server_tags or dns_cfg.get("final") in fakeip_server_tags:
-        remote_tag = next((s["tag"] for s in new_servers if s.get("type") not in ("fakeip", "local") and s["tag"] != direct_dns_tag), direct_dns_tag)
-        dns_cfg["final"] = remote_tag
-
-    if not dns_cfg.get("strategy") or dns_cfg.get("strategy") == "prefer_ipv4":
-        dns_cfg["strategy"] = "ipv4_only"
-
-    # --- 4. 修复 Route ---
+    # --- 4. 修复 Route 与国内外分流规则集 (geosite-cn / geoip-cn) ---
     route_cfg = cfg_dict.get("route")
     if not isinstance(route_cfg, dict):
         route_cfg = {}
@@ -1724,192 +1114,110 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
 
     cur_ddr = route_cfg.get("default_domain_resolver")
     cur_ddr_tag = cur_ddr.get("server") if isinstance(cur_ddr, dict) else cur_ddr
-    if not cur_ddr_tag or cur_ddr_tag not in dns_server_tags:
+    if not cur_ddr_tag or cur_ddr_tag not in dns_server_tags or cur_ddr_tag in fakeip_server_tags:
         route_cfg["default_domain_resolver"] = direct_dns_tag
 
     if route_cfg.get("final") not in valid_tags:
         route_cfg["final"] = main_proxy_tag
 
-    # 核心保障: 自动注入 geosite-cn 与 geoip-cn 规则集 (国内高速镜像源，适配 sing-box 1.14.3)
-    rule_sets = route_cfg.setdefault("rule_set", [])
-    if not isinstance(rule_sets, list):
-        rule_sets = []
-        route_cfg["rule_set"] = rule_sets
+    raw_rs = route_cfg.get("rule_set", [])
+    if not isinstance(raw_rs, list):
+        raw_rs = []
 
-    existing_rs_map = {}
-    for rs in rule_sets:
-        if isinstance(rs, dict) and rs.get("tag"):
-            existing_rs_map[rs["tag"]] = rs
-
-    if "geosite-cn" not in existing_rs_map:
-        rule_sets.append({
-            "tag": "geosite-cn",
-            "type": "remote",
-            "format": "binary",
-            "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
-            "download_detour": direct_tag
-        })
-    if "geoip-cn" not in existing_rs_map:
-        rule_sets.append({
-            "tag": "geoip-cn",
-            "type": "remote",
-            "format": "binary",
-            "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
-            "download_detour": direct_tag
-        })
-
-    valid_rule_sets = set()
     clean_rs = []
-    for rs in rule_sets:
+    valid_rule_sets = set()
+    for rs in raw_rs:
         if not isinstance(rs, dict) or not rs.get("tag"):
             continue
         rs = dict(rs)
         if "download_detour" in rs and rs["download_detour"] not in valid_tags:
-            rs["download_detour"] = direct_tag or main_proxy_tag
+            rs["download_detour"] = direct_tag
         clean_rs.append(rs)
         if isinstance(rs["tag"], list):
             valid_rule_sets.update(rs["tag"])
         else:
             valid_rule_sets.add(rs["tag"])
+
+    for default_rs in DEFAULT_PRESET_CONFIG["route"]["rule_set"]:
+        if default_rs["tag"] not in valid_rule_sets:
+            rs_copy = dict(default_rs)
+            rs_copy["download_detour"] = direct_tag
+            clean_rs.append(rs_copy)
+            valid_rule_sets.add(rs_copy["tag"])
+
     route_cfg["rule_set"] = clean_rs
 
-    if "rules" in dns_cfg and isinstance(dns_cfg["rules"], list):
-        final_dns_rules = []
-        for r in dns_cfg["rules"]:
-            if "rule_set" in r:
-                rv = r["rule_set"]
-                if isinstance(rv, str) and rv not in valid_rule_sets:
-                    r.pop("rule_set", None)
-                elif isinstance(rv, list):
-                    r["rule_set"] = [x for x in rv if x in valid_rule_sets]
-                    if not r["rule_set"]:
-                        r.pop("rule_set", None)
-            match_keys = set(r.keys()) - {"action", "server", "disable_cache", "rewrite_ttl", "client_subnet", "strategy", "method", "rcode"}
-            if match_keys:
-                final_dns_rules.append(r)
+    # 构建防回环 dns.rules:
+    # 第一优先级: 所有代理节点自身的 server 域名强制走 direct_dns_tag ("ali" DoH)，绝不进 FakeIP
+    # 第二优先级: geosite-cn 与国内常见域名后缀走 direct_dns_tag ("ali" DoH)
+    # 第三优先级: 来自 tun-in / dns-in 的 A/AAAA 查询走 fakeip
+    clean_dns_rules = []
+    if proxy_server_domains:
+        clean_dns_rules.append({
+            "domain": sorted(list(proxy_server_domains)),
+            "action": "route",
+            "server": direct_dns_tag
+        })
+    if "geosite-cn" in valid_rule_sets:
+        clean_dns_rules.append({
+            "rule_set": ["geosite-cn"],
+            "action": "route",
+            "server": direct_dns_tag
+        })
+    clean_dns_rules.append({
+        "domain_suffix": CN_DOMAIN_SUFFIXES,
+        "action": "route",
+        "server": direct_dns_tag
+    })
+    if has_tun and fakeip_server_tags:
+        f_tag = sorted(list(fakeip_server_tags))[0]
+        clean_dns_rules.append({
+            "inbound": [t for t in inbound_tags_for_fakeip if t in valid_inbound_tags],
+            "query_type": ["A", "AAAA"],
+            "action": "route",
+            "server": f_tag,
+            "rewrite_ttl": 1
+        })
 
-        # 确保 dns.rules 包含 geosite-cn 直连解析规则
-        has_geosite_cn_dns = any(
-            isinstance(r.get("rule_set"), (str, list)) and
-            "geosite-cn" in (r.get("rule_set") if isinstance(r.get("rule_set"), list) else [r.get("rule_set")])
-            for r in final_dns_rules
-        )
-        if not has_geosite_cn_dns:
-            final_dns_rules.insert(0, {
-                "rule_set": ["geosite-cn"],
-                "action": "route",
-                "server": direct_dns_tag
-            })
-        dns_cfg["rules"] = final_dns_rules
+    dns_cfg["rules"] = clean_dns_rules
 
-    raw_route_rules = route_cfg.get("rules", [])
-    if not isinstance(raw_route_rules, list):
-        raw_route_rules = []
+    if dns_cfg.get("final") not in dns_server_tags or dns_cfg.get("final") in fakeip_server_tags:
+        remote_tag = next((s["tag"] for s in new_servers if s.get("type") not in ("fakeip", "local") and s["tag"] != direct_dns_tag), direct_dns_tag)
+        dns_cfg["final"] = remote_tag
 
-    clean_route_rules = []
-    has_sniff_rule = False
-    has_dns_hijack = False
+    # 构建标准顺序的 route.rules:
+    # 1. sniff
+    # 2. logical OR (inbound=dns-in || protocol=dns || port=53) => hijack-dns (必须在 ip_is_private 之前！)
+    # 3. ip_is_private => 直连
+    # 4. 国内域名与 geosite-cn / geoip-cn => 直连
+    hijack_subrules = [{"protocol": "dns"}, {"port": 53}]
+    if "dns-in" in valid_inbound_tags:
+        hijack_subrules.insert(0, {"inbound": ["dns-in"]})
 
-    for r in raw_route_rules:
-        if not isinstance(r, dict):
-            continue
-        r = dict(r)
-        r.pop("geoip", None)
-        r.pop("geosite", None)
-        r.pop("source_geoip", None)
-
-        if "rule_set" in r:
-            rs_val = r["rule_set"]
-            if isinstance(rs_val, str) and rs_val not in valid_rule_sets:
-                r.pop("rule_set", None)
-            elif isinstance(rs_val, list):
-                r["rule_set"] = [x for x in rs_val if x in valid_rule_sets]
-                if not r["rule_set"]:
-                    r.pop("rule_set", None)
-
-        action = r.get("action", "")
-        ob_target = r.get("outbound", "")
-
-        if action == "sniff":
-            has_sniff_rule = True
-            clean_route_rules.append(r)
-            continue
-
-        if action == "hijack-dns" or ob_target in removed_dns_tags or r.get("protocol") == "dns":
-            r.pop("outbound", None)
-            r["protocol"] = "dns"
-            r["action"] = "hijack-dns"
-            has_dns_hijack = True
-            clean_route_rules.append(r)
-            continue
-
-        if action == "reject" or ob_target in removed_block_tags:
-            r.pop("outbound", None)
-            r["action"] = "reject"
-            match_keys = set(r.keys()) - {"action", "method", "no_drop"}
-            if match_keys:
-                clean_route_rules.append(r)
-            continue
-
-        if ob_target:
-            if ob_target in ("direct", "直连"):
-                r["outbound"] = direct_tag
-            elif ob_target not in valid_tags:
-                r["outbound"] = main_proxy_tag
-
-        match_keys = set(r.keys()) - {"action", "outbound", "server", "strategy"}
-        if match_keys:
-            clean_route_rules.append(r)
-
-    # 局域网 53 端口与 direct 入站劫持保障
-    has_dns_in_hijack = any(
-        r.get("action") == "hijack-dns" and
-        "dns-in" in (r.get("inbound") if isinstance(r.get("inbound"), list) else [r.get("inbound")])
-        for r in clean_route_rules
-    )
-    if not has_dns_in_hijack:
-        clean_route_rules.insert(0, {"inbound": ["dns-in"], "action": "hijack-dns"})
-
-    has_port_53_hijack = any(
-        r.get("action") == "hijack-dns" and r.get("port") == 53
-        for r in clean_route_rules
-    )
-    if not has_port_53_hijack:
-        clean_route_rules.insert(0, {"port": 53, "action": "hijack-dns"})
-
-    if not has_dns_hijack:
-        clean_route_rules.insert(0, {"protocol": "dns", "action": "hijack-dns"})
-    if not has_sniff_rule:
-        clean_route_rules.insert(0, {"action": "sniff"})
-
-    has_private_ip = any(
-        r.get("ip_is_private") is True and r.get("outbound") == direct_tag
-        for r in clean_route_rules
-    )
-    if not has_private_ip:
-        insert_idx = 0
-        for idx, r in enumerate(clean_route_rules):
-            if r.get("action") not in ("sniff", "hijack-dns"):
-                insert_idx = idx
-                break
-        else:
-            insert_idx = len(clean_route_rules)
-        clean_route_rules.insert(insert_idx, {"ip_is_private": True, "outbound": direct_tag})
-
-    # 国内规则集 (geosite-cn + geoip-cn) 直连保障: 确保国内网站与IP零延迟直连
-    has_cn_ruleset = any(
-        r.get("outbound") == direct_tag and
-        isinstance(r.get("rule_set"), list) and
-        ("geosite-cn" in r.get("rule_set") or "geoip-cn" in r.get("rule_set"))
-        for r in clean_route_rules
-    )
-    if not has_cn_ruleset:
-        clean_route_rules.append({
-            "rule_set": ["geosite-cn", "geoip-cn"],
+    standard_route_rules = [
+        {"action": "sniff"},
+        {
+            "type": "logical",
+            "mode": "or",
+            "rules": hijack_subrules,
+            "action": "hijack-dns"
+        },
+        {
+            "ip_is_private": True,
+            "outbound": direct_tag
+        },
+        {
+            "domain_suffix": CN_DOMAIN_SUFFIXES,
+            "outbound": direct_tag
+        }
+    ]
+    if "geosite-cn" in valid_rule_sets or "geoip-cn" in valid_rule_sets:
+        standard_route_rules.append({
+            "rule_set": [x for x in ("geosite-cn", "geoip-cn") if x in valid_rule_sets],
             "outbound": direct_tag
         })
 
-    route_cfg["rules"] = clean_route_rules
+    route_cfg["rules"] = standard_route_rules
 
     # --- 5. 修复 Experimental ---
     exp_cfg = cfg_dict.get("experimental")
@@ -1921,18 +1229,32 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False, force_disab
 
     return cfg_dict
 
-def sanitize_config_file(filepath, force_disable_tun: bool = False, force_disable_auto_redirect: bool = False):
+def sanitize_config_file(filepath, force_disable_tun: bool = False):
     """就地净化已有配置文件"""
     if not os.path.exists(filepath):
         return
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
-        data = sanitize_singbox_dict(data, force_disable_tun=force_disable_tun, force_disable_auto_redirect=force_disable_auto_redirect)
+        data = sanitize_singbox_dict(data, force_disable_tun=force_disable_tun)
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     except Exception as e:
         append_log(f"净化配置异常: {e}")
+
+def clear_stale_cache_files():
+    """清理可能缓存了错误 FakeIP 映射的旧 cache.db 文件"""
+    for cpath in (
+        os.path.join(BASE_DIR, "cache.db"),
+        os.path.join(DATA_DIR, "cache.db"),
+        "/opt/singbox-ui/cache.db",
+        "/opt/singbox-ui/data/cache.db"
+    ):
+        try:
+            if os.path.exists(cpath):
+                os.remove(cpath)
+        except Exception:
+            pass
 
 # ==============================================================================
 # 强健网络拉取引擎 (解决 Sub-Store 500 / Cloudflare 403 / 自签证书 / DNS 污染与死锁)
@@ -2506,49 +1828,21 @@ def build_config_with_preset(valid_external_nodes: list):
         "台湾": regions_map["台湾"]["nodes"],
     }
 
-    app_groups = {
-        "AI", "YouTube", "Google", "Github", "Telegram", "TikTok",
-        "Netflix", "Steam", "OneDrive", "Microsoft", "Apple", "Emby", "Wallet", "漏网之鱼"
-    }
-    # 每个业务分组里面只需要各个国家的自动和手动以及自动选择，节点全部去掉！
-    country_groups = [
-        "香港自动", "香港手动",
-        "日本自动", "日本手动",
-        "狮城自动", "狮城手动",
-        "美国自动", "美国手动",
-        "台湾自动", "台湾手动"
-    ]
-    sub_groups = ["自动选择"] + country_groups + ["直连"]
-
     for ob in preset["outbounds"]:
         tag = ob.get("tag", "")
-        if tag == "自动选择":
-            # 自动选择：自动优选所有节点
+        if tag in ("自动选择", "手动选择"):
             ob["outbounds"] = list(all_tags) if all_tags else ["直连"]
-        elif tag == "手动选择":
-            # 手动选择：手动挑选所有节点
-            ob["outbounds"] = list(all_tags) if all_tags else ["直连"]
-            ob["default"] = ob["outbounds"][0]
-        elif tag == "默认代理":
-            # 节点全部去掉，仅包含自动选择以及各个国家的自动与手动
-            ob["outbounds"] = list(sub_groups)
-            ob["default"] = "自动选择"
-        elif tag in app_groups:
-            # 业务分组节点全部去掉，仅包含默认代理、自动选择以及各个国家的自动与手动
-            ob["outbounds"] = ["默认代理"] + list(sub_groups)
-            ob["default"] = "默认代理"
-        elif tag.endswith("自动"):
-            # 在各个国家自动下面才显示该国所有节点
-            r_key = tag[:2]
-            r_nodes = region_tags_map.get(r_key, [])
-            ob["outbounds"] = list(r_nodes) if r_nodes else ["直连"]
-        elif tag.endswith("手动"):
-            # 在各个国家手动下面才显示该国所有节点
-            r_key = tag[:2]
-            r_nodes = region_tags_map.get(r_key, [])
-            ob["outbounds"] = list(r_nodes) if r_nodes else ["直连"]
             if ob.get("type") == "selector":
                 ob["default"] = ob["outbounds"][0]
+        elif tag == "默认代理":
+            base_groups = ["自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动"]
+            ob["outbounds"] = base_groups + list(all_tags) + ["直连"]
+            ob["default"] = "自动选择"
+        elif tag.endswith("自动") or tag.endswith("手动"):
+            r_key = tag[:2]
+            if r_key in region_tags_map:
+                r_nodes = region_tags_map[r_key]
+                ob["outbounds"] = list(r_nodes) if r_nodes else ["直连"]
 
     preset["outbounds"].extend(dedup_nodes)
     return sanitize_singbox_dict(preset)
@@ -2619,11 +1913,6 @@ class SingBoxManager:
             except Exception:
                 pass
 
-        env_info = detect_virtualization_env()
-        tun_ok, tun_msg = ensure_tun_available_detailed()
-        env_info["tun_ok"] = tun_ok
-        env_info["tun_msg"] = tun_msg
-
         return {
             "running": running,
             "pid": self.process.pid if running else None,
@@ -2632,8 +1921,7 @@ class SingBoxManager:
             "arch": self.get_arch(),
             "kernel_version": self.check_version(),
             "bin_path": self.bin_path,
-            "config_exists": os.path.exists(CONFIG_PATH),
-            "env": env_info
+            "config_exists": os.path.exists(CONFIG_PATH)
         }
 
     def validate_config(self, config_content: str):
@@ -2666,8 +1954,7 @@ class SingBoxManager:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1,
-            cwd=BASE_DIR
+            bufsize=1
         )
         self.start_time = time.time()
 
@@ -2683,16 +1970,10 @@ class SingBoxManager:
         self._log_thread = threading.Thread(target=log_reader, args=(self.process,), daemon=True)
         self._log_thread.start()
         time.sleep(0.45)
-        if self.process.poll() is None and os.name != "nt":
-            for prop in ("rp_filter", "send_redirects"):
-                tun_f = f"/proc/sys/net/ipv4/conf/tun0/{prop}"
-                if os.path.isfile(tun_f):
-                    try:
-                        with open(tun_f, "w") as f:
-                            f.write("0\n")
-                    except Exception:
-                        pass
-        return self.process.poll() is None
+        if self.process.poll() is None:
+            setup_gateway_network()
+            return True
+        return False
 
     def start(self):
         if self.is_running():
@@ -2707,6 +1988,8 @@ class SingBoxManager:
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(preset_data, f, indent=2, ensure_ascii=False)
 
+        setup_gateway_network()
+        clear_stale_cache_files()
         sanitize_config_file(CONFIG_PATH)
 
         try:
@@ -2718,26 +2001,22 @@ class SingBoxManager:
         except Exception:
             pass
 
-        configure_gateway_networking()
-
         try:
             if self._spawn_process():
-                append_log(f"Sing-Box 核心已启动 (PID: {self.process.pid})")
+                append_log(f"Sing-Box 核心已启动 (PID: {self.process.pid}，已启用 DoH 防回环、53 端口 DNS 接管与旁路由分流)")
                 return True, "启动成功"
 
-            recent_logs = "\n".join(list(LOG_BUFFER)[-8:])
-
-            # 仅在当前确实受限于无特权容器且无法打开 /dev/net/tun 时，才降级为 Mixed 端口模式
-            if "/dev/net/tun" in recent_logs.lower() and ("permission denied" in recent_logs.lower() or "operation not permitted" in recent_logs.lower() or "no such file or directory" in recent_logs.lower()):
-                append_log("检测到当前环境无 /dev/net/tun 访问权限，正在自动切换为 Mixed (0.0.0.0:2080) 模式重试启动...")
+            recent_logs = "\n".join(list(LOG_BUFFER)[-6:])
+            if "tun" in recent_logs.lower() or "/dev/net/tun" in recent_logs.lower():
+                append_log("检测到当前容器环境不支持创建 TUN 虚拟网卡，正在自动切换为 Mixed (0.0.0.0:2080) 模式重试启动...")
                 sanitize_config_file(CONFIG_PATH, force_disable_tun=True)
                 if self._spawn_process():
                     append_log(f"Sing-Box 核心已通过 Mixed 代理模式成功启动 (PID: {self.process.pid}，端口: 2080)")
-                    return True, "启动成功 (当前环境无 TUN 权限，已自动降级为 Mixed 模式)"
+                    return True, "启动成功 (当前容器未开启 TUN 设备，已自动降级为 Mixed 端口 2080 模式)"
 
             self.process = None
             self.start_time = None
-            append_log(f"Sing-Box 启动后退出:\n{recent_logs}")
+            append_log("Sing-Box 启动后立即退出，请检查日志。")
             return False, f"启动失败，内核已退出:\n{recent_logs}"
         except Exception as e:
             append_log(f"启动失败: {e}")
@@ -2999,144 +2278,6 @@ class SingBoxManager:
 
 manager = SingBoxManager()
 
-def process_and_apply_subscription(sub_url: str, sub_name: str = "", use_preset: bool = True, set_active: bool = True, sub_id: str = None):
-    """
-    拉取/解析订阅，彻底清理旧缓存与历史节点，以最新规则纯净重构 config.json 并重启内核，
-    同时将订阅元数据持久化至 subscriptions.json。
-    """
-    sub_url = sub_url.strip()
-    if not sub_url:
-        return False, "订阅链接或节点内容不能为空", "", ""
-
-    append_log(f"准备拉取并应用订阅: {sub_name or sub_url[:40]} (use_preset={use_preset})")
-
-    if re.match(r"^https?://", sub_url, re.I):
-        full_cfg, valid_external, err_msg = fetch_and_parse_subscription(sub_url)
-        if err_msg and not valid_external and not full_cfg:
-            msg = f"拉取或解析远程订阅失败: {err_msg}"
-            append_log(msg)
-            return False, msg, "", ""
-    else:
-        full_cfg, valid_external = parse_subscription_payload(sub_url)
-
-    if not valid_external and not full_cfg:
-        msg = "未能从订阅中提取到有效节点（支持 Sub-Store 链接、Sing-Box JSON、Base64/明文 anytls/vless/hy2 链接、Clash YAML）"
-        append_log(msg)
-        return False, msg, "", ""
-
-    # 1. 停止内核以释放 cache.db 锁
-    manager.stop()
-
-    # 2. 深度清理所有缓存数据库 (cache.db, wal, journal 等)
-    removed_count = remove_singbox_cache()
-    if removed_count:
-        append_log(f"已清理 {removed_count} 个历史缓存数据库文件，彻底消除旧节点残留。")
-
-    # 3. 始终基于标准预设全新构建（绝不携带上一版本的旧节点）
-    if use_preset or not full_cfg:
-        final_config = build_config_with_preset(valid_external)
-    else:
-        final_config = sanitize_singbox_dict(full_cfg)
-
-    final_config_str = json.dumps(final_config, indent=2, ensure_ascii=False)
-
-    # 4. 写入新的 config.json
-    if os.path.exists(CONFIG_PATH):
-        try:
-            shutil.copy(CONFIG_PATH, os.path.join(DATA_DIR, "config.json.bak"))
-        except Exception:
-            pass
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        f.write(final_config_str)
-
-    # 5. 更新 subscriptions.json 持久化存储
-    subs_data = load_subscriptions()
-    now_str = time.strftime("%Y-%m-%d %H:%M:%S")
-    node_count = len(valid_external)
-    anytls_count = sum(1 for n in valid_external if n.get("type") == "anytls")
-
-    # 查找已有条目或创建新条目
-    if not sub_id:
-        existing = next((s for s in subs_data["subscriptions"] if s.get("url") == sub_url), None)
-        if existing:
-            sub_id = existing["id"]
-        else:
-            sub_id = f"sub_{int(time.time())}_{random.randint(100, 999)}"
-
-    target_entry = None
-    for s in subs_data["subscriptions"]:
-        if s.get("id") == sub_id:
-            target_entry = s
-            break
-
-    if not sub_name:
-        if target_entry and target_entry.get("name"):
-            sub_name = target_entry["name"]
-        else:
-            parsed = urllib.parse.urlsplit(sub_url)
-            last_part = parsed.path.rstrip("/").split("/")[-1] if parsed.path else ""
-            sub_name = urllib.parse.unquote(last_part) if last_part else f"订阅 {len(subs_data['subscriptions']) + 1}"
-
-    if target_entry:
-        target_entry["name"] = sub_name
-        target_entry["url"] = sub_url
-        target_entry["use_preset"] = use_preset
-        target_entry["node_count"] = node_count
-        target_entry["anytls_count"] = anytls_count
-        target_entry["updated_at"] = now_str
-    else:
-        subs_data["subscriptions"].append({
-            "id": sub_id,
-            "name": sub_name,
-            "url": sub_url,
-            "use_preset": use_preset,
-            "node_count": node_count,
-            "anytls_count": anytls_count,
-            "updated_at": now_str
-        })
-
-    if set_active:
-        subs_data["active_id"] = sub_id
-
-    save_subscriptions(subs_data)
-
-    # 6. 重启内核
-    ok, restart_msg = manager.start()
-    extra_info = f"（含 {anytls_count} 个 AnyTLS 节点）" if anytls_count else ""
-    append_log(f"订阅【{sub_name}】应用成功！已载入 {node_count} 个节点{extra_info}。内核启动: {restart_msg}")
-
-    msg = f"已成功切换并应用订阅【{sub_name}】！已彻底清空旧缓存并载入 {node_count} 个节点{extra_info}。"
-    if not ok:
-        msg += f" (内核启动警告: {restart_msg})"
-
-    return ok, msg, final_config_str, sub_id
-
-def clean_all_cache_and_rebuild():
-    """深度停止内核、粉碎所有缓存数据库，根据当前激活订阅重构纯净配置并重启"""
-    manager.stop()
-    removed = remove_singbox_cache()
-    subs_data = load_subscriptions()
-    active_id = subs_data.get("active_id", "")
-    active_sub = next((s for s in subs_data.get("subscriptions", []) if s.get("id") == active_id), None)
-
-    if active_sub and active_sub.get("url"):
-        append_log(f"依据当前激活订阅【{active_sub.get('name')}】重新纯净重构配置...")
-        ok, msg, cfg_str, _ = process_and_apply_subscription(
-            sub_url=active_sub["url"],
-            sub_name=active_sub.get("name", ""),
-            use_preset=active_sub.get("use_preset", True),
-            set_active=True,
-            sub_id=active_id
-        )
-        return ok, f"深度清理完成 (已粉碎 {removed} 个缓存文件)！{msg}"
-    else:
-        preset_data = load_preset_dict()
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(preset_data, f, indent=2, ensure_ascii=False)
-        ok, start_msg = manager.start()
-        return ok, f"已粉碎 {removed} 个缓存数据库文件，已重置为标准预设配置并重启内核 ({start_msg})"
-
-
 class DashboardHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=STATIC_DIR, **kwargs)
@@ -3164,8 +2305,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         try:
             if self.path == "/api/status":
                 self._send_json(manager.get_status())
-            elif self.path == "/api/subscriptions":
-                self._send_json(load_subscriptions())
             elif self.path == "/api/logs":
                 self._send_json(list(LOG_BUFFER))
             elif self.path == "/api/config":
@@ -3209,9 +2348,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             elif self.path == "/api/service/restart":
                 ok, msg = manager.restart()
                 self._send_json({"success": ok, "message": msg})
-            elif self.path == "/api/system/clean_cache":
-                ok, msg = clean_all_cache_and_rebuild()
-                self._send_json({"success": ok, "message": msg})
             elif self.path == "/api/config/save":
                 data = self._read_body_json()
                 config_str = data.get("config", "")
@@ -3242,112 +2378,54 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 ok, msg = manager.select_proxy(group, node)
                 self._send_json({"success": ok, "message": msg})
 
-            elif self.path == "/api/subscriptions/add":
-                data = self._read_body_json()
-                url = data.get("url", "").strip()
-                name = data.get("name", "").strip()
-                use_preset = data.get("use_preset", True)
-                apply_now = data.get("apply_now", True)
-                if not url:
-                    self._send_json({"success": False, "message": "订阅链接或节点内容不能为空"})
-                    return
-                if apply_now:
-                    ok, msg, cfg_str, sub_id = process_and_apply_subscription(
-                        sub_url=url, sub_name=name, use_preset=use_preset, set_active=True
-                    )
-                    self._send_json({"success": ok, "message": msg, "id": sub_id, "data": load_subscriptions(), "config": cfg_str})
-                else:
-                    subs_data = load_subscriptions()
-                    sub_id = f"sub_{int(time.time())}_{random.randint(100, 999)}"
-                    if not name:
-                        parsed = urllib.parse.urlsplit(url)
-                        last_part = parsed.path.rstrip("/").split("/")[-1] if parsed.path else ""
-                        name = urllib.parse.unquote(last_part) if last_part else f"订阅 {len(subs_data['subscriptions']) + 1}"
-                    subs_data["subscriptions"].append({
-                        "id": sub_id,
-                        "name": name,
-                        "url": url,
-                        "use_preset": use_preset,
-                        "node_count": 0,
-                        "anytls_count": 0,
-                        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")
-                    })
-                    if not subs_data["active_id"]:
-                        subs_data["active_id"] = sub_id
-                    save_subscriptions(subs_data)
-                    self._send_json({"success": True, "message": f"订阅【{name}】已成功保存", "id": sub_id, "data": subs_data})
-
-            elif self.path == "/api/subscriptions/select":
-                data = self._read_body_json()
-                sub_id = data.get("id", "").strip()
-                subs_data = load_subscriptions()
-                entry = next((s for s in subs_data.get("subscriptions", []) if s.get("id") == sub_id), None)
-                if not entry:
-                    self._send_json({"success": False, "message": "未找到指定的订阅"})
-                    return
-                ok, msg, cfg_str, _ = process_and_apply_subscription(
-                    sub_url=entry["url"],
-                    sub_name=entry.get("name", ""),
-                    use_preset=entry.get("use_preset", True),
-                    set_active=True,
-                    sub_id=sub_id
-                )
-                self._send_json({"success": ok, "message": msg, "data": load_subscriptions(), "config": cfg_str})
-
-            elif self.path == "/api/subscriptions/update":
-                data = self._read_body_json()
-                sub_id = data.get("id", "").strip()
-                subs_data = load_subscriptions()
-                entry = next((s for s in subs_data.get("subscriptions", []) if s.get("id") == sub_id), None)
-                if not entry:
-                    self._send_json({"success": False, "message": "未找到指定的订阅"})
-                    return
-                is_active = (subs_data.get("active_id") == sub_id)
-                ok, msg, cfg_str, _ = process_and_apply_subscription(
-                    sub_url=entry["url"],
-                    sub_name=entry.get("name", ""),
-                    use_preset=entry.get("use_preset", True),
-                    set_active=is_active,
-                    sub_id=sub_id
-                )
-                self._send_json({"success": ok, "message": msg, "data": load_subscriptions(), "config": cfg_str})
-
-            elif self.path == "/api/subscriptions/delete":
-                data = self._read_body_json()
-                sub_id = data.get("id", "").strip()
-                subs_data = load_subscriptions()
-                orig_len = len(subs_data.get("subscriptions", []))
-                subs_data["subscriptions"] = [s for s in subs_data.get("subscriptions", []) if s.get("id") != sub_id]
-                if len(subs_data["subscriptions"]) < orig_len:
-                    if subs_data.get("active_id") == sub_id:
-                        subs_data["active_id"] = subs_data["subscriptions"][0]["id"] if subs_data["subscriptions"] else ""
-                    save_subscriptions(subs_data)
-                    self._send_json({"success": True, "message": "订阅已成功删除", "data": subs_data})
-                else:
-                    self._send_json({"success": False, "message": "未找到要删除的订阅"})
-
             elif self.path == "/api/subscribe/import":
                 data = self._read_body_json()
                 sub_url = data.get("url", "").strip()
-                sub_name = data.get("name", "").strip()
                 use_preset = data.get("use_preset", True)
 
                 if not sub_url:
                     self._send_json({"success": False, "message": "订阅链接或节点内容不能为空"})
                     return
 
-                ok, msg, cfg_str, sub_id = process_and_apply_subscription(
-                    sub_url=sub_url,
-                    sub_name=sub_name,
-                    use_preset=use_preset,
-                    set_active=True
-                )
+                if re.match(r"^https?://", sub_url, re.I):
+                    append_log(f"正在拉取远程订阅: {sub_url}")
+                    full_cfg, valid_external, err_msg = fetch_and_parse_subscription(sub_url)
+                    if err_msg and not valid_external and not full_cfg:
+                        msg = f"拉取或解析远程订阅失败: {err_msg}"
+                        append_log(msg)
+                        self._send_json({"success": False, "message": msg})
+                        return
+                else:
+                    append_log("正在解析直接粘贴的节点链接/订阅文本...")
+                    full_cfg, valid_external = parse_subscription_payload(sub_url)
+
+                if not valid_external and not full_cfg:
+                    msg = "未能从订阅中提取到有效节点（支持 Sub-Store 链接、Sing-Box JSON、Base64/明文 anytls/vless/hy2 链接、Clash YAML）"
+                    append_log(msg)
+                    self._send_json({"success": False, "message": msg})
+                    return
+
+                if use_preset or not full_cfg:
+                    final_config = build_config_with_preset(valid_external)
+                else:
+                    final_config = sanitize_singbox_dict(full_cfg)
+
+                final_config_str = json.dumps(final_config, indent=2, ensure_ascii=False)
+
+                if os.path.exists(CONFIG_PATH):
+                    shutil.copy(CONFIG_PATH, os.path.join(DATA_DIR, "config.json.bak"))
+                with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                    f.write(final_config_str)
+
+                anytls_count = sum(1 for n in valid_external if n.get("type") == "anytls")
+                extra_info = f"（含 {anytls_count} 个 AnyTLS 节点）" if anytls_count else ""
+                append_log(f"订阅更新成功！共提取 {len(valid_external)} 个节点{extra_info}并注入分流策略组。")
+                ok, restart_msg = manager.restart()
+                status_note = "核心已启动生效" if ok else f"但启动异常: {restart_msg}"
                 self._send_json({
                     "success": ok,
-                    "message": msg,
-                    "config": cfg_str,
-                    "id": sub_id,
-                    "data": load_subscriptions()
+                    "message": f"订阅更新成功！已载入 {len(valid_external)} 个节点{extra_info}，{status_note}。",
+                    "config": final_config_str
                 })
 
             elif self.path == "/api/system/install_kernel":
@@ -3363,7 +2441,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._send_json({"success": False, "message": f"处理失败: {e}"})
 
 def run_server(port=9622):
-    configure_gateway_networking()
     load_preset_dict()
     if os.path.exists(CONFIG_PATH):
         sanitize_config_file(CONFIG_PATH)
@@ -3382,20 +2459,6 @@ def run_server(port=9622):
     def auto_start_kernel():
         time.sleep(1)
         if not manager.is_running():
-            if not os.path.exists(CONFIG_PATH):
-                subs_data = load_subscriptions()
-                active_id = subs_data.get("active_id", "")
-                active_sub = next((s for s in subs_data.get("subscriptions", []) if s.get("id") == active_id), None)
-                if active_sub and active_sub.get("url"):
-                    append_log(f"开箱自启机制: 检测到已有激活订阅【{active_sub.get('name')}】，正在纯净重建配置并启动...")
-                    process_and_apply_subscription(
-                        sub_url=active_sub["url"],
-                        sub_name=active_sub.get("name", ""),
-                        use_preset=active_sub.get("use_preset", True),
-                        set_active=True,
-                        sub_id=active_id
-                    )
-                    return
             ok, msg = manager.start()
             if ok:
                 append_log(f"开箱自启机制: {msg}")
