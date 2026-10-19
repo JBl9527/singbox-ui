@@ -402,7 +402,12 @@ def _v2_base_config():
                 {"type": "fakeip", "tag": "fakeip", "inet4_range": "198.18.0.0/15", "inet6_range": "fc00::/18"},
             ],
             "rules": [
+                # D1: 拒 HTTPS/SVCB (防 ECH 加密 SNI)
                 {"query_type": ["HTTPS", "SVCB"], "action": "reject"},
+                # D4: 国内域名 -> 国内DNS 拿真实IP (直连更快, 不走 fakeip)
+                {"rule_set": "geosite-cn", "query_type": ["A", "AAAA"],
+                 "action": "route", "server": "ali"},
+                # D8: 国外/小众未知域名 -> FakeIP (由分流规则按域名路由)
                 {"inbound": ["dns-in", "tun-in"], "query_type": ["A", "AAAA"],
                  "action": "route", "server": "fakeip", "rewrite_ttl": 1},
             ],
