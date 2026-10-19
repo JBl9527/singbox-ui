@@ -216,7 +216,13 @@ def setup_gateway_network():
                         "-j", "REDIRECT", "--to-ports", "53"]
                 chk = subprocess.run(["iptables"] + ["-C"] + base, capture_output=True, timeout=2)
                 if chk.returncode != 0:
-                    subprocess.run(["iptables"] + ["-I"] + base, capture_output=True, timeout=2)
+                    ins = subprocess.run(["iptables"] + ["-I"] + base, capture_output=True, text=True, timeout=2)
+                    if ins.returncode == 0:
+                        append_log(f"DNS劫持规则已恢复({proto})")
+                    else:
+                        append_log(f"警告: DNS劫持规则写入失败({proto}): {(ins.stderr or '').strip()[:150]}")
+                else:
+                    append_log(f"DNS劫持规则已存在({proto}), 无需重复写入")
         except Exception:
             pass
 
