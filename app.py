@@ -329,17 +329,124 @@ CN_DOMAIN_SUFFIXES = [
 
 # 内置 sing-box 1.14.3 标准旁路由预设模板
 # 关键设计: "ali" 使用 https (DoH 443端口)，彻底避开 TUN 对 UDP 53 端口的自动劫持回环 (Issue #2643)
-DEFAULT_PRESET_CONFIG = {'log': {'level': 'info', 'timestamp': True}, 'experimental': {'cache_file': {'enabled': True, 'path': 'cache.db', 'store_fakeip': True, 'store_dns': True}, 'clash_api': {'external_controller': '0.0.0.0:9090', 'external_ui': 'ui', 'default_mode': 'Rule'}}, 'dns': {'servers': [{'type': 'udp', 'tag': 'ali', 'server': '223.5.5.5', 'server_port': 53}, {'type': 'local', 'tag': 'local'}, {'type': 'https', 'tag': 'remote', 'server': '1.1.1.1', 'server_port': 443, 'path': '/dns-query', 'domain_resolver': 'ali', 'detour': '默认代理'}, {'type': 'fakeip', 'tag': 'fakeip', 'inet4_range': '198.18.0.0/15', 'inet6_range': 'fc00::/18'}], 'rules': [{'domain_suffix': ['.cn', '.baidu.com', '.qq.com', '.taobao.com', '.tmall.com', '.alicdn.com', '.aliyun.com', '.jd.com', '.163.com', '.126.com', '.bilibili.com', '.hdslb.com', '.douyin.com', '.weibo.com', '.wechat.com', '.weixin.qq.com', '.mi.com', '.xiaomi.com'], 'action': 'route', 'server': 'ali'}, {'rule_set': ['geosite-cn'], 'action': 'route', 'server': 'ali'}, {'inbound': ['dns-in', 'tun-in'], 'query_type': ['A', 'AAAA'], 'action': 'route', 'server': 'fakeip', 'rewrite_ttl': 1}], 'final': 'remote', 'strategy': 'ipv4_only'}, 'inbounds': [{'type': 'direct', 'tag': 'dns-in', 'listen': '0.0.0.0', 'listen_port': 53}, {'type': 'mixed', 'tag': 'mixed-in', 'listen': '0.0.0.0', 'listen_port': 2080}, {'type': 'tun', 'tag': 'tun-in', 'interface_name': 'tun0', 'address': ['172.19.0.1/30'], 'mtu': 1500, 'auto_route': True, 'strict_route': False, 'stack': 'mixed', 'endpoint_independent_nat': True}], 'outbounds': [{'type': 'selector', 'tag': '默认代理', 'outbounds': ['自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '自动选择'}, {'type': 'selector', 'tag': 'AI', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'YouTube', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Google', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Github', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Telegram', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'TikTok', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Netflix', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Steam', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'OneDrive', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Microsoft', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Apple', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Emby', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Wallet', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': '漏网之鱼', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'urltest', 'tag': '自动选择', 'outbounds': ['直连'], 'url': 'http://www.gstatic.com/generate_204', 'interval': '3m', 'tolerance': 50}, {'type': 'selector', 'tag': '手动选择', 'outbounds': ['直连'], 'default': '直连'}, {'type': 'urltest', 'tag': '香港自动', 'outbounds': ['直连'], 'url': 'http://www.gstatic.com/generate_204', 'interval': '5m', 'tolerance': 50}, {'type': 'selector', 'tag': '香港手动', 'outbounds': ['直连'], 'default': '直连'}, {'type': 'urltest', 'tag': '日本自动', 'outbounds': ['直连'], 'url': 'http://www.gstatic.com/generate_204', 'interval': '5m', 'tolerance': 50}, {'type': 'selector', 'tag': '日本手动', 'outbounds': ['直连'], 'default': '直连'}, {'type': 'urltest', 'tag': '狮城自动', 'outbounds': ['直连'], 'url': 'http://www.gstatic.com/generate_204', 'interval': '5m', 'tolerance': 50}, {'type': 'selector', 'tag': '狮城手动', 'outbounds': ['直连'], 'default': '直连'}, {'type': 'urltest', 'tag': '美国自动', 'outbounds': ['直连'], 'url': 'http://www.gstatic.com/generate_204', 'interval': '5m', 'tolerance': 50}, {'type': 'selector', 'tag': '美国手动', 'outbounds': ['直连'], 'default': '直连'}, {'type': 'urltest', 'tag': '台湾自动', 'outbounds': ['直连'], 'url': 'http://www.gstatic.com/generate_204', 'interval': '5m', 'tolerance': 50}, {'type': 'selector', 'tag': '台湾手动', 'outbounds': ['直连'], 'default': '直连'}, {'type': 'direct', 'tag': '直连'}], 'route': {'auto_detect_interface': True, 'default_domain_resolver': 'ali', 'final': '漏网之鱼', 'rule_set': [{'tag': 'geosite-cn', 'type': 'remote', 'format': 'binary', 'url': 'https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs', 'download_detour': '直连'}, {'tag': 'geoip-cn', 'type': 'remote', 'format': 'binary', 'url': 'https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs', 'download_detour': '直连'}], 'rules': [{'action': 'sniff'}, {'protocol': 'dns', 'action': 'hijack-dns'}, {'port': 53, 'action': 'hijack-dns', 'protocol': 'dns'}, {'inbound': ['dns-in'], 'action': 'hijack-dns', 'protocol': 'dns'}, {'ip_is_private': True, 'outbound': '直连'}, {'domain_suffix': ['openai.com', 'chatgpt.com', 'anthropic.com', 'claude.ai', 'oaistatic.com', 'oaiusercontent.com', 'groq.com', 'mistral.ai', 'cohere.ai', 'perplexity.ai', 'claude.com', 'deepseek.com', 'x.ai', 'grok.com', 'poe.com', 'you.com'], 'outbound': 'AI'}, {'domain_suffix': ['youtube.com', 'googlevideo.com', 'ytimg.com', 'youtu.be', 'youtube-nocookie.com'], 'outbound': 'YouTube'}, {'domain_suffix': ['google.com', 'googleapis.com', 'gstatic.com', 'googleusercontent.com', 'gmail.com', 'googlemail.com', 'g.co', 'googleadservices.com'], 'outbound': 'Google'}, {'domain_suffix': ['github.com', 'githubassets.com', 'githubusercontent.com', 'github.io', 'raw.githubusercontent.com'], 'outbound': 'Github'}, {'domain_suffix': ['telegram.org', 't.me', 'telegra.ph', 'tdesktop.com', 'telegram.me'], 'outbound': 'Telegram'}, {'domain_suffix': ['tiktok.com', 'byteoversea.com', 'ibytedtos.com', 'tiktokv.com', 'tiktokcdn.com', 'musical.ly'], 'outbound': 'TikTok'}, {'domain_suffix': ['netflix.com', 'nflxvideo.net', 'nflxext.com', 'nflxso.net'], 'outbound': 'Netflix'}, {'domain_suffix': ['steampowered.com', 'steamcommunity.com', 'steamgames.com', 'steamstatic.com'], 'outbound': 'Steam'}, {'domain_suffix': ['onedrive.live.com', '1drv.ms', 'sharepoint.com'], 'outbound': 'OneDrive'}, {'domain_suffix': ['microsoft.com', 'live.com', 'office.com', 'azure.com', 'bing.com', 'msn.com'], 'outbound': 'Microsoft'}, {'domain_suffix': ['apple.com', 'icloud.com', 'aaplimg.com', 'apple-cloudkit.com'], 'outbound': 'Apple'}, {'domain_suffix': ['as174.de', 'xmsl.org', '69yun69.com', 'emby.wtf', 'embymv.link', 'gidd.tv', 'emby.moe'], 'outbound': 'Emby'}, {'domain_suffix': ['paypal.com', 'binance.com', 'okx.com', 'bybit.com', 'bitget.com', 'crypto.com', 'coinbase.com', 'kraken.com', 'kucoin.com', 'gate.io', 'bybit.biz', 'byabcde.com', 'byd3c3.com', 'bybdc6.com', 'byapps.net', 'bitkeep.com', 'bitkeep.top', 'bitkeep.vip'], 'outbound': 'Wallet'}, {'domain_keyword': ['bybit', 'bitget', 'bitkeep', 'binance', 'okx'], 'outbound': 'Wallet'}, {'domain_suffix': ['.cn', '.baidu.com', '.qq.com', '.taobao.com', '.tmall.com', '.alicdn.com', '.aliyun.com', '.jd.com', '.163.com', '.126.com', '.bilibili.com', '.hdslb.com', '.douyin.com', '.weibo.com', '.wechat.com', '.weixin.qq.com', '.mi.com', '.xiaomi.com'], 'outbound': '直连'}, {'rule_set': ['geosite-cn', 'geoip-cn'], 'outbound': '直连'}]}}
 
-def load_preset_dict():
-    """始终使用并同步经过 sing-box 1.14.3 验证的预设模板"""
-    preset_copy = sanitize_singbox_dict(json.loads(json.dumps(DEFAULT_PRESET_CONFIG)))
+# ============ v2 数据层: DIY分组 / 节点选择 / 设置 / 节点快照 ============
+GROUPS_PATH = os.path.join(DATA_DIR, "groups.json")
+SELECTIONS_PATH = os.path.join(DATA_DIR, "selections.json")
+SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
+NODES_PATH = os.path.join(DATA_DIR, "nodes.json")
+
+def _load_json_file(path, default):
     try:
-        with open(PRESET_PATH, "w", encoding="utf-8") as f:
-            json.dump(preset_copy, f, indent=2, ensure_ascii=False)
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
     except Exception:
         pass
-    return preset_copy
+    return json.loads(json.dumps(default))
+
+def _save_json_file(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, path)
+
+def load_groups():
+    d = _load_json_file(GROUPS_PATH, {"groups": []})
+    groups = d.get("groups", [])
+    groups.sort(key=lambda g: g.get("order", 0))
+    return {"groups": groups}
+
+def save_groups(groups):
+    for i, g in enumerate(groups):
+        g["order"] = i
+    _save_json_file(GROUPS_PATH, {"groups": groups})
+
+def new_group_id():
+    import uuid as _uuid
+    return "g-" + _uuid.uuid4().hex[:8]
+
+def load_selections():
+    return _load_json_file(SELECTIONS_PATH, {})
+
+def save_selections(sel):
+    _save_json_file(SELECTIONS_PATH, sel)
+
+def load_settings():
+    return _load_json_file(SETTINGS_PATH, {"quic_block": True})
+
+def save_settings(s):
+    _save_json_file(SETTINGS_PATH, s)
+
+def load_nodes():
+    return _load_json_file(NODES_PATH, [])
+
+def save_nodes(nodes):
+    _save_json_file(NODES_PATH, nodes)
+
+def _v2_base_config():
+    """v2 最小化基础配置: 仅中国内外分流骨架"""
+    return {
+        "log": {"level": "info", "timestamp": True},
+        "experimental": {
+            "cache_file": {"enabled": True, "path": "cache.db", "store_fakeip": True, "store_dns": True},
+            "clash_api": {"external_controller": "0.0.0.0:9090", "external_ui": "ui", "default_mode": "Rule"},
+        },
+        "dns": {
+            "servers": [
+                {"type": "udp", "tag": "ali", "server": "223.5.5.5", "server_port": 53},
+                {"type": "local", "tag": "local"},
+                {"type": "https", "tag": "remote", "server": "1.1.1.1", "server_port": 443,
+                 "path": "/dns-query", "domain_resolver": "ali", "detour": "默认代理"},
+                {"type": "fakeip", "tag": "fakeip", "inet4_range": "198.18.0.0/15", "inet6_range": "fc00::/18"},
+            ],
+            "rules": [
+                {"query_type": ["HTTPS", "SVCB"], "action": "reject"},
+                {"inbound": ["dns-in", "tun-in"], "query_type": ["A", "AAAA"],
+                 "action": "route", "server": "fakeip", "rewrite_ttl": 1},
+            ],
+            "final": "remote",
+            "strategy": "ipv4_only",
+        },
+        "inbounds": [
+            {"type": "direct", "tag": "dns-in", "listen": "0.0.0.0", "listen_port": 53},
+            {"type": "mixed", "tag": "mixed-in", "listen": "0.0.0.0", "listen_port": 2080},
+            {"type": "tun", "tag": "tun-in", "interface_name": "tun0",
+             "address": ["172.19.0.1/30"], "mtu": 1500, "auto_route": True,
+             "strict_route": False, "stack": "mixed", "endpoint_independent_nat": True},
+        ],
+        "outbounds": [],
+        "route": {
+            "auto_detect_interface": True,
+            "default_domain_resolver": "ali",
+            "final": "漏网之鱼",
+            "rule_set": [
+                {"tag": "geosite-cn", "type": "remote", "format": "binary",
+                 "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
+                 "download_detour": "直连"},
+                {"tag": "geoip-cn", "type": "remote", "format": "binary",
+                 "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
+                 "download_detour": "直连"},
+            ],
+            "rules": [],
+        },
+    }
+
+def load_preset_dict():
+    """v2: 返回最小化基础配置模板 (不 sanitize, 因 outbounds 为空时 sanitize 会改写 final)"""
+    return _v2_base_config()
+
+def _get_effective_config_dict():
+    """读取 config.json, 不存在时返回 v2 最小化基础配置"""
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return _v2_base_config()
+
 
 def is_ip_address(val: str) -> bool:
     if not val:
@@ -947,7 +1054,7 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False):
     # --- 3. 修复 DNS 配置 (DoH 443 防回环 + 代理节点域名白名单直连解析) ---
     dns_cfg = cfg_dict.get("dns")
     if not isinstance(dns_cfg, dict):
-        dns_cfg = json.loads(json.dumps(DEFAULT_PRESET_CONFIG["dns"]))
+        dns_cfg = _v2_base_config()["dns"]
         cfg_dict["dns"] = dns_cfg
 
     legacy_fakeip = dns_cfg.pop("fakeip", None)
@@ -1055,7 +1162,7 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False):
         else:
             valid_rule_sets.add(rs["tag"])
 
-    for default_rs in DEFAULT_PRESET_CONFIG["route"]["rule_set"]:
+    for default_rs in _v2_base_config()["route"]["rule_set"]:
         if default_rs["tag"] not in valid_rule_sets:
             rs_copy = dict(default_rs)
             rs_copy["download_detour"] = direct_tag
@@ -1445,7 +1552,10 @@ def _subscription_parse_failed(full_cfg, valid_external, err_msg):
 
 
 def _build_and_write_config(full_cfg, valid_external, use_preset):
-    """用解析结果构建并写入 config.json，返回 (config_str, node_count, anytls_count)。"""
+    """用解析结果构建并写入 config.json，返回 (config_str, node_count, anytls_count)。
+    v2: 始终用最小化构建器; 节点快照存 data/nodes.json 供分组变更时重建; 重建前捕获当前选择。"""
+    capture_live_selections()
+    save_nodes(valid_external)
     if use_preset or not full_cfg:
         final_config = build_config_with_preset(valid_external)
     else:
@@ -1823,60 +1933,147 @@ def parse_subscription_payload(raw_text: str):
 
     return None, []
 
-def build_config_with_preset(valid_external_nodes: list):
-    """将提取的代理节点列表注入预设模板并净化为 1.14 标准配置"""
-    preset = load_preset_dict()
-    base_outbounds = [
-        ob for ob in preset.get("outbounds", [])
-        if ob.get("type") in ("selector", "urltest", "direct")
-    ]
-    preset["outbounds"] = base_outbounds
+def _v2_selector(tag, members, default=None):
+    ob = {"type": "selector", "tag": tag, "outbounds": list(members)}
+    valid = [m for m in members if m]
+    if default and default in valid:
+        ob["default"] = default
+    elif valid:
+        ob["default"] = valid[0]
+    return ob
 
-    all_tags = []
-    seen = set()
-    dedup_nodes = []
+def _ensure_user_ruleset(url):
+    """下载用户规则集(srs)到 data/rulesets/, 返回 rule_set tag; 失败返回 None"""
+    import hashlib
+    try:
+        d = hashlib.md5(url.encode()).hexdigest()[:12]
+        tag = f"user-{d}"
+        dest_dir = os.path.join(DATA_DIR, "rulesets")
+        os.makedirs(dest_dir, exist_ok=True)
+        dest = os.path.join(dest_dir, f"{tag}.srs")
+        if not os.path.exists(dest) or os.path.getsize(dest) == 0:
+            req = urllib.request.Request(url, headers={"User-Agent": "singbox-ui/2.0"})
+            with urllib.request.urlopen(req, timeout=30) as r, open(dest, "wb") as f:
+                f.write(r.read())
+            append_log(f"规则集已下载: {tag} <- {url[:60]}")
+        return tag
+    except Exception as e:
+        append_log(f"规则集下载失败: {url[:60]} ({e})")
+        return None
+
+def build_config_with_preset(valid_external_nodes: list):
+    """v2: 最小化构建 - 节点 + 内建5组 + DIY分组, 选择从 selections.json 恢复"""
+    groups = load_groups()["groups"]
+    selections = load_selections()
+    settings = load_settings()
+
+    seen, dedup_nodes, node_tags = set(), [], []
     for ob in valid_external_nodes:
         ob = dict(ob)
         tag = str(ob.get("tag", "")).strip()
         if not tag:
             continue
-        base_t = tag
-        idx = 2
+        base, idx = tag, 2
         while tag in seen:
-            tag = f"{base_t}-{idx}"
+            tag = f"{base}-{idx}"
             idx += 1
         ob["tag"] = tag
         seen.add(tag)
-        all_tags.append(tag)
+        node_tags.append(tag)
         dedup_nodes.append(ob)
 
-    regions_map = classify_nodes_by_region(dedup_nodes)
-    region_tags_map = {
-        "香港": regions_map["香港"]["nodes"],
-        "日本": regions_map["日本"]["nodes"],
-        "狮城": regions_map["狮城"]["nodes"],
-        "美国": regions_map["美国"]["nodes"],
-        "台湾": regions_map["台湾"]["nodes"],
-    }
+    cfg = _v2_base_config()
+    outbounds = []
+    outbounds.extend(dedup_nodes)
+    outbounds.append({"type": "direct", "tag": "直连"})
+    outbounds.append(_v2_selector("手动选择", node_tags or ["直连"], selections.get("手动选择")))
+    outbounds.append({
+        "type": "urltest", "tag": "自动选择",
+        "outbounds": node_tags or ["直连"],
+        "url": "http://www.gstatic.com/generate_204",
+        "interval": "3m", "tolerance": 50,
+    })
+    outbounds.append(_v2_selector("默认代理", ["自动选择", "手动选择", "直连"],
+                                  selections.get("默认代理", "自动选择")))
+    diy_names = []
+    for g in groups:
+        name = str(g.get("name", "")).strip()
+        if not name or name in ("直连", "默认代理", "自动选择", "手动选择", "漏网之鱼"):
+            continue
+        diy_names.append(name)
+        outbounds.append(_v2_selector(name, ["默认代理", "自动选择", "手动选择", "直连"],
+                                      selections.get(name, "默认代理")))
+    outbounds.append(_v2_selector("漏网之鱼", ["默认代理", "直连"],
+                                  selections.get("漏网之鱼", "默认代理")))
+    cfg["outbounds"] = outbounds
 
-    for ob in preset["outbounds"]:
-        tag = ob.get("tag", "")
-        if tag in ("自动选择", "手动选择"):
-            ob["outbounds"] = list(all_tags) if all_tags else ["直连"]
-            if ob.get("type") == "selector":
-                ob["default"] = ob["outbounds"][0]
-        elif tag == "默认代理":
-            base_groups = ["自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动"]
-            ob["outbounds"] = base_groups + list(all_tags) + ["直连"]
-            ob["default"] = "自动选择"
-        elif tag.endswith("自动") or tag.endswith("手动"):
-            r_key = tag[:2]
-            if r_key in region_tags_map:
-                r_nodes = region_tags_map[r_key]
-                ob["outbounds"] = list(r_nodes) if r_nodes else ["直连"]
+    rules = [
+        {"action": "sniff"},
+        {"protocol": "dns", "action": "hijack-dns"},
+        {"inbound": ["dns-in"], "action": "hijack-dns", "protocol": "dns"},
+        {"ip_is_private": True, "outbound": "直连"},
+    ]
+    for g in groups:
+        name = str(g.get("name", "")).strip()
+        if name not in diy_names:
+            continue
+        if g.get("domains"):
+            rules.append({"domain": list(dict.fromkeys(g["domains"])), "outbound": name})
+        if g.get("domain_suffix"):
+            rules.append({"domain_suffix": list(dict.fromkeys(g["domain_suffix"])), "outbound": name})
+        if g.get("keywords"):
+            rules.append({"domain_keyword": list(dict.fromkeys(g["keywords"])), "outbound": name})
+        if g.get("ip_cidr"):
+            rules.append({"ip_cidr": list(dict.fromkeys(g["ip_cidr"])), "outbound": name})
+        for url in g.get("ruleset_urls", []) or []:
+            tag = _ensure_user_ruleset(str(url).strip())
+            if tag:
+                # 注册到 rule_set
+                rs_list = cfg["route"].setdefault("rule_set", [])
+                if not any(r.get("tag") == tag for r in rs_list):
+                    rs_list.append({"tag": tag, "type": "local", "format": "binary",
+                                    "path": os.path.join(DATA_DIR, "rulesets", f"{tag}.srs")})
+                rules.append({"rule_set": [tag], "outbound": name})
+    rules.append({"domain_suffix": CN_DOMAIN_SUFFIXES, "outbound": "直连"})
+    rules.append({"rule_set": ["geosite-cn", "geoip-cn"], "outbound": "直连"})
+    if settings.get("quic_block", True):
+        rules.append({"network": "udp", "port": 443, "action": "reject"})
+    cfg["route"]["rules"] = rules
+    return sanitize_singbox_dict(cfg)
 
-    preset["outbounds"].extend(dedup_nodes)
-    return sanitize_singbox_dict(preset)
+def capture_live_selections():
+    """从 clash API 读取各 selector 当前选择, 存入 selections.json (重建配置前调用)"""
+    try:
+        controller, secret = manager.get_clash_api_config()
+        if not (manager.is_running() and controller):
+            return
+        url = f"{controller}/proxies"
+        req = urllib.request.Request(url)
+        if secret:
+            req.add_header("Authorization", f"Bearer {secret}")
+        with DIRECT_OPENER.open(req, timeout=5) as resp:
+            data = json.load(resp)
+        sel = load_selections()
+        for name, p in data.get("proxies", {}).items():
+            if p.get("type") == "Selector" and p.get("now"):
+                sel[name] = p["now"]
+        save_selections(sel)
+        append_log(f"已捕获 {len(sel)} 个策略组选择状态")
+    except Exception as e:
+        append_log(f"捕获选择状态失败: {e}")
+
+def rebuild_and_restart(reason="配置重建"):
+    """用 data/nodes.json + groups/selections/settings 重建配置并重启"""
+    capture_live_selections()
+    nodes = load_nodes()
+    cfg = build_config_with_preset(nodes)
+    cfg_str = json.dumps(cfg, indent=2, ensure_ascii=False)
+    if os.path.exists(CONFIG_PATH):
+        shutil.copy(CONFIG_PATH, os.path.join(DATA_DIR, "config.json.bak"))
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        f.write(cfg_str)
+    append_log(f"{reason}: 已重建配置 (节点 {len(nodes)} 个)")
+    return manager.restart()
 
 
 class SingBoxManager:
@@ -2021,9 +2218,11 @@ class SingBoxManager:
             return False, f"未找到 sing-box 核心程序: {self.bin_path}，请先点击安装核心"
 
         if not os.path.exists(CONFIG_PATH):
-            preset_data = load_preset_dict()
+            # v2: 用保存的节点快照重建最小化配置 (无节点时为空配置, 仅直连)
+            preset_data = build_config_with_preset(load_nodes())
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(preset_data, f, indent=2, ensure_ascii=False)
+            append_log("已按 v2 最小化模型重建 config.json")
 
         setup_gateway_network()
         clear_stale_cache_files()
@@ -2147,12 +2346,8 @@ class SingBoxManager:
             return False, err
 
     def get_clash_api_config(self):
-        cfg_file = CONFIG_PATH if os.path.exists(CONFIG_PATH) else PRESET_PATH
-        if not os.path.exists(cfg_file):
-            return "http://127.0.0.1:9090", ""
         try:
-            with open(cfg_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = _get_effective_config_dict()
             clash_api = data.get("experimental", {}).get("clash_api", {})
             controller = str(clash_api.get("external_controller", "127.0.0.1:9090")).strip()
             secret = str(clash_api.get("secret", "")).strip()
@@ -2206,12 +2401,11 @@ class SingBoxManager:
             except Exception:
                 pass
 
-        cfg_file = CONFIG_PATH if os.path.exists(CONFIG_PATH) else PRESET_PATH
-        if not os.path.exists(cfg_file):
+        if not os.path.exists(CONFIG_PATH):
             return {"source": "none", "groups": [], "nodes": {}}
 
         try:
-            with open(cfg_file, "r", encoding="utf-8") as f:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
             data = sanitize_singbox_dict(data)
 
@@ -2356,6 +2550,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._send_json({"preset": content})
             elif self.path == "/api/subscriptions":
                 self._send_json(_load_subscriptions())
+            elif self.path == "/api/groups":
+                self._send_json(load_groups())
+            elif self.path == "/api/selections":
+                self._send_json({"selections": load_selections()})
+            elif self.path == "/api/settings":
+                self._send_json(load_settings())
             elif self.path in ["/api/proxies", "/api/nodes"]:
                 self._send_json(manager.get_proxies_data())
             elif self.path.startswith("/api/nodes/delay"):
@@ -2417,6 +2617,69 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 ok, msg = manager.select_proxy(group, node)
                 self._send_json({"success": ok, "message": msg})
 
+            elif self.path == "/api/groups":
+                data = self._read_body_json()
+                groups = load_groups()["groups"]
+                name = str(data.get("name", "")).strip()
+                if not name:
+                    self._send_json({"success": False, "message": "分组名称不能为空"})
+                    return
+                if any(g.get("name") == name for g in groups):
+                    self._send_json({"success": False, "message": "分组名称已存在"})
+                    return
+                g = {
+                    "id": new_group_id(), "name": name, "order": len(groups),
+                    "domains": [s.strip() for s in data.get("domains", []) if str(s).strip()],
+                    "domain_suffix": [s.strip() for s in data.get("domain_suffix", []) if str(s).strip()],
+                    "keywords": [s.strip() for s in data.get("keywords", []) if str(s).strip()],
+                    "ip_cidr": [s.strip() for s in data.get("ip_cidr", []) if str(s).strip()],
+                    "ruleset_urls": [s.strip() for s in data.get("ruleset_urls", []) if str(s).strip()],
+                }
+                groups.append(g)
+                save_groups(groups)
+                ok, msg = rebuild_and_restart(f"新建分组 [{name}]")
+                self._send_json({"success": ok, "message": msg, "group": g})
+            elif self.path == "/api/groups/reorder":
+                data = self._read_body_json()
+                ids = data.get("ids", [])
+                groups = load_groups()["groups"]
+                by_id = {g.get("id"): g for g in groups}
+                ordered = [by_id[i] for i in ids if i in by_id]
+                ordered += [g for g in groups if g.get("id") not in set(ids)]
+                save_groups(ordered)
+                ok, msg = rebuild_and_restart("分组排序已更新")
+                self._send_json({"success": ok, "message": msg})
+            elif self.path.startswith("/api/groups/") and self.path.count("/") == 3:
+                gid = self.path.rsplit("/", 1)[1]
+                groups = load_groups()["groups"]
+                g = next((x for x in groups if x.get("id") == gid), None)
+                if g is None:
+                    self._send_json({"success": False, "message": "分组不存在"})
+                    return
+                data = self._read_body_json()
+                if data.get("_delete"):
+                    groups = [x for x in groups if x.get("id") != gid]
+                    save_groups(groups)
+                    ok, msg = rebuild_and_restart(f"删除分组 [{g.get('name')}]")
+                    self._send_json({"success": ok, "message": msg})
+                    return
+                for k in ("domains", "domain_suffix", "keywords", "ip_cidr", "ruleset_urls"):
+                    if k in data:
+                        g[k] = [str(s).strip() for s in data[k] if str(s).strip()]
+                if data.get("name"):
+                    g["name"] = str(data["name"]).strip()
+                save_groups(groups)
+                ok, msg = rebuild_and_restart(f"更新分组 [{g.get('name')}]")
+                self._send_json({"success": ok, "message": msg, "group": g})
+                return
+            elif self.path == "/api/settings":
+                data = self._read_body_json()
+                s = load_settings()
+                if "quic_block" in data:
+                    s["quic_block"] = bool(data["quic_block"])
+                save_settings(s)
+                ok, msg = rebuild_and_restart("设置已更新")
+                self._send_json({"success": ok, "message": msg, "settings": s})
             elif self.path == "/api/subscribe/import":
                 data = self._read_body_json()
                 sub_url = data.get("url", "").strip()
@@ -2627,7 +2890,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._send_json({"success": False, "message": f"处理失败: {e}"})
 
 def run_server(port=9622):
-    load_preset_dict()
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(os.path.join(DATA_DIR, "rulesets"), exist_ok=True)
     if os.path.exists(CONFIG_PATH):
         sanitize_config_file(CONFIG_PATH)
 
