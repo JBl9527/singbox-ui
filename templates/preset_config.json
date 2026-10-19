@@ -697,7 +697,8 @@
         "domain_suffix": [
           "paypal.com",
           "binance.com",
-          "okx.com"
+          "okx.com",
+          "bybit.com"
         ],
         "outbound": "Wallet"
       },
