@@ -19,10 +19,11 @@
   "dns": {
     "servers": [
       {
-        "type": "udp",
+        "type": "https",
         "tag": "ali",
         "server": "223.5.5.5",
-        "server_port": 53
+        "server_port": 443,
+        "path": "/dns-query"
       },
       {
         "type": "local",
@@ -46,32 +47,57 @@
     ],
     "rules": [
       {
-        "domain_suffix": [
-          ".cn",
-          ".baidu.com",
-          ".qq.com",
-          ".taobao.com",
-          ".tmall.com",
-          ".alicdn.com",
-          ".aliyun.com",
-          ".jd.com",
-          ".163.com",
-          ".126.com",
-          ".bilibili.com",
-          ".hdslb.com",
-          ".douyin.com",
-          ".weibo.com",
-          ".wechat.com",
-          ".weixin.qq.com",
-          ".mi.com",
-          ".xiaomi.com"
+        "query_type": [
+          "HTTPS"
+        ],
+        "action": "reject"
+      },
+      {
+        "rule_set": [
+          "geosite-cn"
         ],
         "action": "route",
         "server": "ali"
       },
       {
-        "rule_set": [
-          "geosite-cn"
+        "domain_suffix": [
+          "cn",
+          "baidu.com",
+          "qq.com",
+          "weixin.qq.com",
+          "wechat.com",
+          "taobao.com",
+          "tmall.com",
+          "alicdn.com",
+          "aliyun.com",
+          "alipay.com",
+          "jd.com",
+          "360buyimg.com",
+          "163.com",
+          "126.com",
+          "126.net",
+          "127.net",
+          "bilibili.com",
+          "hdslb.com",
+          "biliapi.net",
+          "douyin.com",
+          "bytedance.com",
+          "weibo.com",
+          "sina.com.cn",
+          "mi.com",
+          "xiaomi.com",
+          "zhihu.com",
+          "csdn.net",
+          "meituan.com",
+          "dianping.com",
+          "pinduoduo.com",
+          "ipip.net",
+          "cip.cc",
+          "10010.com",
+          "189.cn",
+          "10086.cn",
+          "ghfast.top",
+          "ghproxy.net"
         ],
         "action": "route",
         "server": "ali"
@@ -126,16 +152,12 @@
       "tag": "默认代理",
       "outbounds": [
         "自动选择",
+        "手动选择",
         "香港自动",
-        "香港手动",
         "日本自动",
-        "日本手动",
         "狮城自动",
-        "狮城手动",
         "美国自动",
-        "美国手动",
         "台湾自动",
-        "台湾手动",
         "直连"
       ],
       "default": "自动选择"
@@ -146,6 +168,7 @@
       "outbounds": [
         "默认代理",
         "自动选择",
+        "手动选择",
         "香港自动",
         "香港手动",
         "日本自动",
@@ -166,6 +189,7 @@
       "outbounds": [
         "默认代理",
         "自动选择",
+        "手动选择",
         "香港自动",
         "香港手动",
         "日本自动",
@@ -186,6 +210,7 @@
       "outbounds": [
         "默认代理",
         "自动选择",
+        "手动选择",
         "香港自动",
         "香港手动",
         "日本自动",
@@ -206,6 +231,7 @@
       "outbounds": [
         "默认代理",
         "自动选择",
+        "手动选择",
         "香港自动",
         "香港手动",
         "日本自动",
@@ -226,6 +252,7 @@
       "outbounds": [
         "默认代理",
         "自动选择",
+        "手动选择",
         "香港自动",
         "香港手动",
         "日本自动",
@@ -246,6 +273,7 @@
       "outbounds": [
         "默认代理",
         "自动选择",
+        "手动选择",
         "香港自动",
         "香港手动",
         "日本自动",
@@ -266,6 +294,7 @@
       "outbounds": [
         "默认代理",
         "自动选择",
+        "手动选择",
         "香港自动",
         "香港手动",
         "日本自动",
@@ -286,6 +315,7 @@
       "outbounds": [
         "默认代理",
         "自动选择",
+        "手动选择",
         "香港自动",
         "香港手动",
         "日本自动",
@@ -306,6 +336,7 @@
       "outbounds": [
         "默认代理",
         "自动选择",
+        "手动选择",
         "香港自动",
         "香港手动",
         "日本自动",
@@ -326,6 +357,7 @@
       "outbounds": [
         "默认代理",
         "自动选择",
+        "手动选择",
         "香港自动",
         "香港手动",
         "日本自动",
@@ -346,6 +378,7 @@
       "outbounds": [
         "默认代理",
         "自动选择",
+        "手动选择",
         "香港自动",
         "香港手动",
         "日本自动",
@@ -366,6 +399,7 @@
       "outbounds": [
         "默认代理",
         "自动选择",
+        "手动选择",
         "香港自动",
         "香港手动",
         "日本自动",
@@ -386,6 +420,7 @@
       "outbounds": [
         "默认代理",
         "自动选择",
+        "手动选择",
         "香港自动",
         "香港手动",
         "日本自动",
@@ -406,6 +441,7 @@
       "outbounds": [
         "默认代理",
         "自动选择",
+        "手动选择",
         "香港自动",
         "香港手动",
         "日本自动",
@@ -539,6 +575,104 @@
     "final": "漏网之鱼",
     "rule_set": [
       {
+        "tag": "geosite-openai",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs",
+        "download_detour": "直连"
+      },
+      {
+        "tag": "geosite-youtube",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-youtube.srs",
+        "download_detour": "直连"
+      },
+      {
+        "tag": "geosite-google",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-google.srs",
+        "download_detour": "直连"
+      },
+      {
+        "tag": "geosite-github",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-github.srs",
+        "download_detour": "直连"
+      },
+      {
+        "tag": "geosite-telegram",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-telegram.srs",
+        "download_detour": "直连"
+      },
+      {
+        "tag": "geoip-telegram",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/telegram.srs",
+        "download_detour": "直连"
+      },
+      {
+        "tag": "geosite-tiktok",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-tiktok.srs",
+        "download_detour": "直连"
+      },
+      {
+        "tag": "geosite-netflix",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-netflix.srs",
+        "download_detour": "直连"
+      },
+      {
+        "tag": "geoip-netflix",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/netflix.srs",
+        "download_detour": "直连"
+      },
+      {
+        "tag": "geosite-steam",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-steam.srs",
+        "download_detour": "直连"
+      },
+      {
+        "tag": "geosite-onedrive",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-onedrive.srs",
+        "download_detour": "直连"
+      },
+      {
+        "tag": "geosite-microsoft",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-microsoft.srs",
+        "download_detour": "直连"
+      },
+      {
+        "tag": "geosite-apple",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-apple.srs",
+        "download_detour": "直连"
+      },
+      {
+        "tag": "geosite-geolocation-!cn",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.srs",
+        "download_detour": "直连"
+      },
+      {
         "tag": "geosite-cn",
         "type": "remote",
         "format": "binary",
@@ -578,45 +712,96 @@
         "outbound": "直连"
       },
       {
+        "rule_set": [
+          "geosite-openai"
+        ],
+        "outbound": "AI"
+      },
+      {
         "domain_suffix": [
           "openai.com",
           "chatgpt.com",
-          "anthropic.com",
-          "claude.ai",
           "oaistatic.com",
           "oaiusercontent.com",
+          "anthropic.com",
+          "claude.ai",
+          "claude.com",
           "groq.com",
           "mistral.ai",
           "cohere.ai",
-          "perplexity.ai"
+          "perplexity.ai",
+          "deepseek.com",
+          "x.ai"
         ],
         "outbound": "AI"
+      },
+      {
+        "rule_set": [
+          "geosite-youtube"
+        ],
+        "outbound": "YouTube"
       },
       {
         "domain_suffix": [
           "youtube.com",
           "googlevideo.com",
           "ytimg.com",
-          "youtu.be"
+          "youtu.be",
+          "ggpht.com",
+          "gvt1.com"
         ],
         "outbound": "YouTube"
+      },
+      {
+        "rule_set": [
+          "geosite-google"
+        ],
+        "outbound": "Google"
       },
       {
         "domain_suffix": [
           "google.com",
           "googleapis.com",
           "gstatic.com",
-          "googleusercontent.com"
+          "googleusercontent.com",
+          "1e100.net"
         ],
         "outbound": "Google"
+      },
+      {
+        "rule_set": [
+          "geosite-github"
+        ],
+        "outbound": "Github"
       },
       {
         "domain_suffix": [
           "github.com",
           "githubassets.com",
-          "githubusercontent.com"
+          "githubusercontent.com",
+          "ghcr.io",
+          "github.io"
         ],
         "outbound": "Github"
+      },
+      {
+        "rule_set": [
+          "geosite-telegram",
+          "geoip-telegram"
+        ],
+        "outbound": "Telegram"
+      },
+      {
+        "ip_cidr": [
+          "91.108.4.0/22",
+          "91.108.8.0/22",
+          "91.108.12.0/22",
+          "91.108.16.0/22",
+          "91.108.56.0/22",
+          "149.154.160.0/20",
+          "185.76.151.0/24"
+        ],
+        "outbound": "Telegram"
       },
       {
         "domain_suffix": [
@@ -628,21 +813,45 @@
         "outbound": "Telegram"
       },
       {
+        "rule_set": [
+          "geosite-tiktok"
+        ],
+        "outbound": "TikTok"
+      },
+      {
         "domain_suffix": [
           "tiktok.com",
           "byteoversea.com",
-          "ibytedtos.com"
+          "ibytedtos.com",
+          "musical.ly",
+          "tiktokcdn.com",
+          "tiktokv.com"
         ],
         "outbound": "TikTok"
+      },
+      {
+        "rule_set": [
+          "geosite-netflix",
+          "geoip-netflix"
+        ],
+        "outbound": "Netflix"
       },
       {
         "domain_suffix": [
           "netflix.com",
           "nflxvideo.net",
           "nflxext.com",
-          "nflxso.net"
+          "nflxso.net",
+          "nflximg.net",
+          "fast.com"
         ],
         "outbound": "Netflix"
+      },
+      {
+        "rule_set": [
+          "geosite-steam"
+        ],
+        "outbound": "Steam"
       },
       {
         "domain_suffix": [
@@ -654,12 +863,24 @@
         "outbound": "Steam"
       },
       {
+        "rule_set": [
+          "geosite-onedrive"
+        ],
+        "outbound": "OneDrive"
+      },
+      {
         "domain_suffix": [
           "onedrive.live.com",
           "1drv.ms",
           "sharepoint.com"
         ],
         "outbound": "OneDrive"
+      },
+      {
+        "rule_set": [
+          "geosite-microsoft"
+        ],
+        "outbound": "Microsoft"
       },
       {
         "domain_suffix": [
@@ -673,11 +894,18 @@
         "outbound": "Microsoft"
       },
       {
+        "rule_set": [
+          "geosite-apple"
+        ],
+        "outbound": "Apple"
+      },
+      {
         "domain_suffix": [
           "apple.com",
           "icloud.com",
           "aaplimg.com",
-          "apple-cloudkit.com"
+          "apple-cloudkit.com",
+          "cdn-apple.com"
         ],
         "outbound": "Apple"
       },
@@ -697,30 +925,51 @@
         "domain_suffix": [
           "paypal.com",
           "binance.com",
-          "okx.com"
+          "okx.com",
+          "bybit.com",
+          "bybit.biz"
         ],
         "outbound": "Wallet"
       },
       {
         "domain_suffix": [
-          ".cn",
-          ".baidu.com",
-          ".qq.com",
-          ".taobao.com",
-          ".tmall.com",
-          ".alicdn.com",
-          ".aliyun.com",
-          ".jd.com",
-          ".163.com",
-          ".126.com",
-          ".bilibili.com",
-          ".hdslb.com",
-          ".douyin.com",
-          ".weibo.com",
-          ".wechat.com",
-          ".weixin.qq.com",
-          ".mi.com",
-          ".xiaomi.com"
+          "cn",
+          "baidu.com",
+          "qq.com",
+          "weixin.qq.com",
+          "wechat.com",
+          "taobao.com",
+          "tmall.com",
+          "alicdn.com",
+          "aliyun.com",
+          "alipay.com",
+          "jd.com",
+          "360buyimg.com",
+          "163.com",
+          "126.com",
+          "126.net",
+          "127.net",
+          "bilibili.com",
+          "hdslb.com",
+          "biliapi.net",
+          "douyin.com",
+          "bytedance.com",
+          "weibo.com",
+          "sina.com.cn",
+          "mi.com",
+          "xiaomi.com",
+          "zhihu.com",
+          "csdn.net",
+          "meituan.com",
+          "dianping.com",
+          "pinduoduo.com",
+          "ipip.net",
+          "cip.cc",
+          "10010.com",
+          "189.cn",
+          "10086.cn",
+          "ghfast.top",
+          "ghproxy.net"
         ],
         "outbound": "直连"
       },
@@ -730,6 +979,12 @@
           "geoip-cn"
         ],
         "outbound": "直连"
+      },
+      {
+        "rule_set": [
+          "geosite-geolocation-!cn"
+        ],
+        "outbound": "默认代理"
       }
     ]
   }

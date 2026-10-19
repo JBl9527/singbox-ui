@@ -27,6 +27,8 @@ import socket
 import struct
 import random
 import base64
+import secrets
+import hmac
 import shutil
 import tarfile
 import ipaddress
@@ -47,6 +49,7 @@ CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 PRESET_PATH = os.path.join(BASE_DIR, "templates", "preset_config.json")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 BIN_DIR = os.path.join(BASE_DIR, "bin")
+WEBUI_PASSWORD_PATH = os.path.join(DATA_DIR, "webui_password")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(BIN_DIR, exist_ok=True)
@@ -65,6 +68,20 @@ DIRECT_OPENER = urllib.request.build_opener(
 def append_log(msg: str):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     LOG_BUFFER.append(f"[{timestamp}] {msg}")
+
+def ensure_webui_password() -> str:
+    """Create a private first-run password when installation did not provide one."""
+    if not os.path.isfile(WEBUI_PASSWORD_PATH) or not os.path.getsize(WEBUI_PASSWORD_PATH):
+        password = secrets.token_urlsafe(24)
+        fd = os.open(WEBUI_PASSWORD_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(password + "\n")
+    try:
+        os.chmod(WEBUI_PASSWORD_PATH, 0o600)
+    except OSError:
+        pass
+    with open(WEBUI_PASSWORD_PATH, "r", encoding="utf-8") as f:
+        return f.read().strip()
 
 def ensure_tun_available() -> bool:
     """检测当前 Linux / 容器环境是否具备可用的 /dev/net/tun 设备"""
@@ -187,6 +204,18 @@ def setup_gateway_network():
     except Exception:
         pass
 
+    local_ipv4s = []
+    if shutil.which("ip"):
+        try:
+            local_addrs = subprocess.run(["ip", "-4", "-o", "addr", "show"],
+                                         capture_output=True, text=True, timeout=2)
+            for line in local_addrs.stdout.splitlines():
+                match = re.search(r"\binet\s+(\d+\.\d+\.\d+\.\d+)/", line)
+                if match and match.group(1) not in local_ipv4s:
+                    local_ipv4s.append(match.group(1))
+        except Exception:
+            pass
+
     if main_iface:
         try:
             subprocess.run(["sysctl", "-w", f"net.ipv4.conf.{main_iface}.rp_filter=0"], capture_output=True, timeout=2)
@@ -196,27 +225,124 @@ def setup_gateway_network():
 
     if shutil.which("iptables"):
         try:
-            subprocess.run(["iptables", "-P", "FORWARD", "ACCEPT"], capture_output=True, timeout=2)
+            # Remove permissive rules installed by older versions of this project.
+            # Do not change the administrator's FORWARD chain policy.
+            for legacy_args in (["-i", "tun0", "-j", "ACCEPT"],
+                                ["-o", "tun0", "-j", "ACCEPT"],
+                                ["-j", "ACCEPT"]):
+                while True:
+                    legacy = subprocess.run(["iptables", "-C", "FORWARD"] + legacy_args,
+                                            capture_output=True, timeout=2)
+                    if legacy.returncode != 0:
+                        break
+                    subprocess.run(["iptables", "-D", "FORWARD"] + legacy_args,
+                                   capture_output=True, timeout=2)
+            # Older installers also inserted unconditional accepts into Docker's
+            # user chain. Remove those same project-owned legacy rules if present.
+            docker_chain = subprocess.run(["iptables", "-S", "DOCKER-USER"],
+                                          capture_output=True, timeout=2)
+            if docker_chain.returncode == 0:
+                for legacy_args in (["-i", "tun0", "-j", "ACCEPT"],
+                                    ["-o", "tun0", "-j", "ACCEPT"],
+                                    ["-j", "ACCEPT"]):
+                    while True:
+                        legacy = subprocess.run(["iptables", "-C", "DOCKER-USER"] + legacy_args,
+                                                capture_output=True, timeout=2)
+                        if legacy.returncode != 0:
+                            break
+                        subprocess.run(["iptables", "-D", "DOCKER-USER"] + legacy_args,
+                                       capture_output=True, timeout=2)
             if main_iface:
-                chk = subprocess.run(["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", main_iface, "-j", "MASQUERADE"], capture_output=True, timeout=2)
+                # The old broad MASQUERADE also rewrote locally generated DNS
+                # replies to LAN clients (53 -> an ephemeral source port).
+                # Keep NAT for original-direction outbound flows only. A local
+                # DNS reply can still be conntrack NEW when it is the first
+                # packet traversing POSTROUTING, so ctstate NEW alone is not
+                # enough to protect its source port 53.
+                old_masq_rules = [
+                    ["-t", "nat", "-D", "POSTROUTING", "-o", main_iface,
+                     "-j", "MASQUERADE"],
+                    ["-t", "nat", "-D", "POSTROUTING", "-o", main_iface,
+                     "-m", "conntrack", "--ctstate", "NEW", "-j", "MASQUERADE"],
+                ]
+                for old_masq in old_masq_rules:
+                    while subprocess.run(["iptables"] + old_masq,
+                                         capture_output=True, timeout=2).returncode == 0:
+                        pass
+                # On a multi-address LAN interface, a wildcard DNS listener
+                # may answer from a different local IP than the one queried.
+                # Restore the original destination IP on replies to port 53.
+                for proto in ("udp", "tcp"):
+                    for local_ip in local_ipv4s:
+                        dns_reply_snat = ["POSTROUTING", "-o", main_iface, "-p", proto,
+                                          "--sport", "53", "-m", "conntrack",
+                                          "--ctorigdst", local_ip, "-j", "SNAT",
+                                          "--to-source", local_ip]
+                        chk = subprocess.run(["iptables", "-t", "nat", "-C"] + dns_reply_snat,
+                                             capture_output=True, timeout=2)
+                        if chk.returncode != 0:
+                            subprocess.run(["iptables", "-t", "nat", "-I", "POSTROUTING", "1"] + dns_reply_snat[1:],
+                                           capture_output=True, timeout=2)
+                masq = ["-t", "nat", "POSTROUTING", "-o", main_iface,
+                        "-m", "conntrack", "--ctstate", "NEW",
+                        "--ctdir", "ORIGINAL", "-j", "MASQUERADE"]
+                chk = subprocess.run(["iptables", "-t", "nat", "-C"] + masq[2:],
+                                     capture_output=True, timeout=2)
                 if chk.returncode != 0:
-                    subprocess.run(["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", main_iface, "-j", "MASQUERADE"], capture_output=True, timeout=2)
-            # FORWARD 放行 tun0 双向流量 (转发路径必经)
-            for fwd_args in (["-I", "FORWARD", "-i", "tun0", "-j", "ACCEPT"],
-                             ["-I", "FORWARD", "-o", "tun0", "-j", "ACCEPT"]):
-                try:
-                    subprocess.run(["iptables"] + fwd_args, capture_output=True, timeout=2)
-                except Exception:
-                    pass
+                    subprocess.run(["iptables", "-t", "nat", "-A"] + masq[2:],
+                                   capture_output=True, timeout=2)
+            # Policy routing can make the kernel's addrtype/fib LOCAL check
+            # misclassify this gateway's own LAN addresses in PREROUTING.
+            # Collect every address assigned to this host and exempt it
+            # explicitly before redirecting client DNS to the local listener.
+            local_ipv4s = []
+            if shutil.which("ip"):
+                local_addrs = subprocess.run(["ip", "-4", "-o", "addr", "show"],
+                                             capture_output=True, text=True, timeout=2)
+                for line in local_addrs.stdout.splitlines():
+                    match = re.search(r"\binet\s+(\d+\.\d+\.\d+\.\d+)/", line)
+                    if match and match.group(1) not in local_ipv4s:
+                        local_ipv4s.append(match.group(1))
             # DNS 劫持: 局域网所有 53 端口请求重定向到本机 53,
             # 由 sing-box dns-in (0.0.0.0:53) + hijack-dns 接管做 FakeIP 解析,
             # 否则局域网 DNS 直连会导致域名分流规则对转发流量失效
             for proto in ("udp", "tcp"):
-                base = ["-t", "nat", "PREROUTING", "-p", proto, "--dport", "53",
-                        "-j", "REDIRECT", "--to-ports", "53"]
-                chk = subprocess.run(["iptables"] + ["-C"] + base, capture_output=True, timeout=2)
+                # Remove all rules installed by previous versions. The
+                # addrtype-based exception is unreliable when policy routing
+                # tables are active, and the old catch-all redirects queries
+                # addressed directly to the gateway a second time.
+                old_rules = [
+                    ["-t", "nat", "-D", "PREROUTING", "-p", proto,
+                     "--dport", "53", "-j", "REDIRECT", "--to-ports", "53"],
+                    ["-t", "nat", "-D", "PREROUTING", "-p", proto, "--dport", "53",
+                     "-m", "addrtype", "!", "--dst-type", "LOCAL",
+                     "-j", "REDIRECT", "--to-ports", "53"],
+                ]
+                for old_rule in old_rules:
+                    while subprocess.run(["iptables"] + old_rule, capture_output=True,
+                                         timeout=2).returncode == 0:
+                        pass
+
+                # Explicit destination exemptions work even when the routing
+                # policy makes fib/addrtype report a local address as unicast.
+                for local_ip in local_ipv4s:
+                    exception = ["PREROUTING", "-p", proto, "-d", local_ip,
+                                 "--dport", "53", "-j", "RETURN"]
+                    chk = subprocess.run(["iptables", "-t", "nat", "-C"] + exception,
+                                         capture_output=True, timeout=2)
+                    if chk.returncode != 0:
+                        ins = subprocess.run(["iptables", "-t", "nat", "-I"] + exception,
+                                             capture_output=True, text=True, timeout=2)
+                        if ins.returncode != 0:
+                            append_log(f"警告: DNS本机地址例外写入失败({proto}, {local_ip}): {(ins.stderr or '').strip()[:150]}")
+
+                redirect = ["PREROUTING", "-p", proto, "--dport", "53",
+                            "-j", "REDIRECT", "--to-ports", "53"]
+                chk = subprocess.run(["iptables", "-t", "nat", "-C"] + redirect,
+                                     capture_output=True, timeout=2)
                 if chk.returncode != 0:
-                    ins = subprocess.run(["iptables"] + ["-I"] + base, capture_output=True, text=True, timeout=2)
+                    ins = subprocess.run(["iptables", "-t", "nat", "-A"] + redirect,
+                                         capture_output=True, text=True, timeout=2)
                     if ins.returncode == 0:
                         append_log(f"DNS劫持规则已恢复({proto})")
                     else:
@@ -244,6 +370,19 @@ def setup_gateway_network():
                     append_log(f"旁路由策略路由已恢复: iif {lan_iface} -> table 2022 (pref 15000)")
                 else:
                     append_log(f"旁路由策略路由配置失败({lan_iface}): {(add.stderr or '').strip()[:120]}")
+
+                # Allow only traffic routed between the discovered LAN interface
+                # and sing-box's TUN. Check before adding so service restarts do
+                # not grow the FORWARD chain indefinitely.
+                for fwd_args in (["-i", lan_iface, "-o", "tun0", "-j", "ACCEPT"],
+                                 ["-i", "tun0", "-o", lan_iface, "-j", "ACCEPT"]):
+                    chk = subprocess.run(["iptables", "-C", "FORWARD"] + fwd_args,
+                                         capture_output=True, timeout=2)
+                    if chk.returncode != 0:
+                        added = subprocess.run(["iptables", "-I", "FORWARD"] + fwd_args,
+                                               capture_output=True, text=True, timeout=2)
+                        if added.returncode != 0:
+                            append_log(f"警告: FORWARD 规则配置失败({lan_iface}): {(added.stderr or '').strip()[:120]}")
             except Exception as e:
                 append_log(f"旁路由策略路由配置异常({lan_iface}): {e}")
 
@@ -317,19 +456,500 @@ ALLOWED_OUTBOUND_FIELDS = {
 }
 
 CN_DOMAIN_SUFFIXES = [
-    ".cn", ".baidu.com", ".qq.com", ".weixin.qq.com", ".wechat.com",
-    ".taobao.com", ".tmall.com", ".alicdn.com", ".aliyun.com", ".alipay.com",
-    ".jd.com", ".360buyimg.com", ".163.com", ".126.com", ".126.net", ".127.net",
-    ".bilibili.com", ".hdslb.com", ".biliapi.net", ".douyin.com", ".bytedance.com",
-    ".weibo.com", ".sina.com.cn", ".mi.com", ".xiaomi.com", ".zhihu.com",
-    ".csdn.net", ".meituan.com", ".dianping.com", ".pinduoduo.com",
-    ".ipip.net", ".cip.cc", ".10010.com", ".189.cn", ".10086.cn",
-    ".ghfast.top", ".ghproxy.net"
+    "cn", "baidu.com", "qq.com", "weixin.qq.com", "wechat.com",
+    "taobao.com", "tmall.com", "alicdn.com", "aliyun.com", "alipay.com",
+    "jd.com", "360buyimg.com", "163.com", "126.com", "126.net", "127.net",
+    "bilibili.com", "hdslb.com", "biliapi.net", "douyin.com", "bytedance.com",
+    "weibo.com", "sina.com.cn", "mi.com", "xiaomi.com", "zhihu.com",
+    "csdn.net", "meituan.com", "dianping.com", "pinduoduo.com",
+    "ipip.net", "cip.cc", "10010.com", "189.cn", "10086.cn",
+    "ghfast.top", "ghproxy.net"
 ]
 
 # 内置 sing-box 1.14.3 标准旁路由预设模板
-# 关键设计: "ali" 使用 https (DoH 443端口)，彻底避开 TUN 对 UDP 53 端口的自动劫持回环 (Issue #2643)
-DEFAULT_PRESET_CONFIG = {'log': {'level': 'info', 'timestamp': True}, 'experimental': {'cache_file': {'enabled': True, 'path': 'cache.db', 'store_fakeip': True, 'store_dns': True}, 'clash_api': {'external_controller': '0.0.0.0:9090', 'external_ui': 'ui', 'default_mode': 'Rule'}}, 'dns': {'servers': [{'type': 'udp', 'tag': 'ali', 'server': '223.5.5.5', 'server_port': 53}, {'type': 'local', 'tag': 'local'}, {'type': 'https', 'tag': 'remote', 'server': '1.1.1.1', 'server_port': 443, 'path': '/dns-query', 'domain_resolver': 'ali', 'detour': '默认代理'}, {'type': 'fakeip', 'tag': 'fakeip', 'inet4_range': '198.18.0.0/15', 'inet6_range': 'fc00::/18'}], 'rules': [{'domain_suffix': ['.cn', '.baidu.com', '.qq.com', '.taobao.com', '.tmall.com', '.alicdn.com', '.aliyun.com', '.jd.com', '.163.com', '.126.com', '.bilibili.com', '.hdslb.com', '.douyin.com', '.weibo.com', '.wechat.com', '.weixin.qq.com', '.mi.com', '.xiaomi.com'], 'action': 'route', 'server': 'ali'}, {'rule_set': ['geosite-cn'], 'action': 'route', 'server': 'ali'}, {'inbound': ['dns-in', 'tun-in'], 'query_type': ['A', 'AAAA'], 'action': 'route', 'server': 'fakeip', 'rewrite_ttl': 1}], 'final': 'remote', 'strategy': 'ipv4_only'}, 'inbounds': [{'type': 'direct', 'tag': 'dns-in', 'listen': '0.0.0.0', 'listen_port': 53}, {'type': 'mixed', 'tag': 'mixed-in', 'listen': '0.0.0.0', 'listen_port': 2080}, {'type': 'tun', 'tag': 'tun-in', 'interface_name': 'tun0', 'address': ['172.19.0.1/30'], 'mtu': 1500, 'auto_route': True, 'strict_route': False, 'stack': 'mixed', 'endpoint_independent_nat': True}], 'outbounds': [{'type': 'selector', 'tag': '默认代理', 'outbounds': ['自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '自动选择'}, {'type': 'selector', 'tag': 'AI', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'YouTube', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Google', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Github', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Telegram', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'TikTok', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Netflix', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Steam', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'OneDrive', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Microsoft', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Apple', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Emby', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Wallet', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': '漏网之鱼', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'urltest', 'tag': '自动选择', 'outbounds': ['直连'], 'url': 'http://www.gstatic.com/generate_204', 'interval': '3m', 'tolerance': 50}, {'type': 'selector', 'tag': '手动选择', 'outbounds': ['直连'], 'default': '直连'}, {'type': 'urltest', 'tag': '香港自动', 'outbounds': ['直连'], 'url': 'http://www.gstatic.com/generate_204', 'interval': '5m', 'tolerance': 50}, {'type': 'selector', 'tag': '香港手动', 'outbounds': ['直连'], 'default': '直连'}, {'type': 'urltest', 'tag': '日本自动', 'outbounds': ['直连'], 'url': 'http://www.gstatic.com/generate_204', 'interval': '5m', 'tolerance': 50}, {'type': 'selector', 'tag': '日本手动', 'outbounds': ['直连'], 'default': '直连'}, {'type': 'urltest', 'tag': '狮城自动', 'outbounds': ['直连'], 'url': 'http://www.gstatic.com/generate_204', 'interval': '5m', 'tolerance': 50}, {'type': 'selector', 'tag': '狮城手动', 'outbounds': ['直连'], 'default': '直连'}, {'type': 'urltest', 'tag': '美国自动', 'outbounds': ['直连'], 'url': 'http://www.gstatic.com/generate_204', 'interval': '5m', 'tolerance': 50}, {'type': 'selector', 'tag': '美国手动', 'outbounds': ['直连'], 'default': '直连'}, {'type': 'urltest', 'tag': '台湾自动', 'outbounds': ['直连'], 'url': 'http://www.gstatic.com/generate_204', 'interval': '5m', 'tolerance': 50}, {'type': 'selector', 'tag': '台湾手动', 'outbounds': ['直连'], 'default': '直连'}, {'type': 'direct', 'tag': '直连'}], 'route': {'auto_detect_interface': True, 'default_domain_resolver': 'ali', 'final': '漏网之鱼', 'rule_set': [{'tag': 'geosite-cn', 'type': 'remote', 'format': 'binary', 'url': 'https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs', 'download_detour': '直连'}, {'tag': 'geoip-cn', 'type': 'remote', 'format': 'binary', 'url': 'https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs', 'download_detour': '直连'}], 'rules': [{'action': 'sniff'}, {'protocol': 'dns', 'action': 'hijack-dns'}, {'port': 53, 'action': 'hijack-dns', 'protocol': 'dns'}, {'inbound': ['dns-in'], 'action': 'hijack-dns', 'protocol': 'dns'}, {'ip_is_private': True, 'outbound': '直连'}, {'domain_suffix': ['openai.com', 'chatgpt.com', 'anthropic.com', 'claude.ai', 'oaistatic.com', 'oaiusercontent.com', 'groq.com', 'mistral.ai', 'cohere.ai', 'perplexity.ai'], 'outbound': 'AI'}, {'domain_suffix': ['youtube.com', 'googlevideo.com', 'ytimg.com', 'youtu.be'], 'outbound': 'YouTube'}, {'domain_suffix': ['google.com', 'googleapis.com', 'gstatic.com', 'googleusercontent.com'], 'outbound': 'Google'}, {'domain_suffix': ['github.com', 'githubassets.com', 'githubusercontent.com'], 'outbound': 'Github'}, {'domain_suffix': ['telegram.org', 't.me', 'telegra.ph', 'tdesktop.com'], 'outbound': 'Telegram'}, {'domain_suffix': ['tiktok.com', 'byteoversea.com', 'ibytedtos.com'], 'outbound': 'TikTok'}, {'domain_suffix': ['netflix.com', 'nflxvideo.net', 'nflxext.com', 'nflxso.net'], 'outbound': 'Netflix'}, {'domain_suffix': ['steampowered.com', 'steamcommunity.com', 'steamgames.com', 'steamstatic.com'], 'outbound': 'Steam'}, {'domain_suffix': ['onedrive.live.com', '1drv.ms', 'sharepoint.com'], 'outbound': 'OneDrive'}, {'domain_suffix': ['microsoft.com', 'live.com', 'office.com', 'azure.com', 'bing.com', 'msn.com'], 'outbound': 'Microsoft'}, {'domain_suffix': ['apple.com', 'icloud.com', 'aaplimg.com', 'apple-cloudkit.com'], 'outbound': 'Apple'}, {'domain_suffix': ['as174.de', 'xmsl.org', '69yun69.com', 'emby.wtf', 'embymv.link', 'gidd.tv', 'emby.moe'], 'outbound': 'Emby'}, {'domain_suffix': ['paypal.com', 'binance.com', 'okx.com'], 'outbound': 'Wallet'}, {'domain_suffix': ['.cn', '.baidu.com', '.qq.com', '.taobao.com', '.tmall.com', '.alicdn.com', '.aliyun.com', '.jd.com', '.163.com', '.126.com', '.bilibili.com', '.hdslb.com', '.douyin.com', '.weibo.com', '.wechat.com', '.weixin.qq.com', '.mi.com', '.xiaomi.com'], 'outbound': '直连'}, {'rule_set': ['geosite-cn', 'geoip-cn'], 'outbound': '直连'}]}}
+# 关键设计:
+# 1. "ali" 使用 https (DoH 443端口)，彻底避开 TUN 对 UDP 53 端口的自动劫持回环
+# 2. 阻断 HTTPS (Type 65) 查询，防止客户端启用 ECH 导致 TLS SNI 嗅探失效而穿透
+# 3. 完整引入官方与社区主流 Rule-Set 规则集 (含 Telegram/Netflix IP 分流与非大陆兜底)，彻底解决分流失效掉入 Final 的问题
+DEFAULT_PRESET_CONFIG = {
+    "log": {"level": "info", "timestamp": True},
+    "experimental": {
+        "cache_file": {
+            "enabled": True,
+            "path": "cache.db",
+            "store_fakeip": True,
+            "store_dns": True
+        },
+        "clash_api": {
+            "external_controller": "0.0.0.0:9090",
+            "external_ui": "ui",
+            "default_mode": "Rule"
+        }
+    },
+    "dns": {
+        "servers": [
+            {"type": "udp", "tag": "ali", "server": "223.5.5.5", "server_port": 53},
+            {"type": "local", "tag": "local"},
+            {
+                "type": "https",
+                "tag": "remote",
+                "server": "1.1.1.1",
+                "server_port": 443,
+                "path": "/dns-query",
+                "domain_resolver": "ali",
+                "detour": "默认代理"
+            },
+            {
+                "type": "fakeip",
+                "tag": "fakeip",
+                "inet4_range": "198.18.0.0/15",
+                "inet6_range": "fc00::/18"
+            }
+        ],
+        "rules": [
+            {"query_type": ["HTTPS"], "action": "reject"},
+            {"domain_suffix": CN_DOMAIN_SUFFIXES, "action": "route", "server": "ali"},
+            {"rule_set": ["geosite-cn"], "action": "route", "server": "ali"},
+            {
+                "inbound": ["dns-in", "tun-in"],
+                "query_type": ["A", "AAAA"],
+                "action": "route",
+                "server": "fakeip",
+                "rewrite_ttl": 1
+            }
+        ],
+        "final": "remote",
+        "strategy": "ipv4_only"
+    },
+    "inbounds": [
+        {"type": "direct", "tag": "dns-in", "listen": "0.0.0.0", "listen_port": 53},
+        {"type": "mixed", "tag": "mixed-in", "listen": "0.0.0.0", "listen_port": 2080},
+        {
+            "type": "tun",
+            "tag": "tun-in",
+            "interface_name": "tun0",
+            "address": ["172.19.0.1/30"],
+            "mtu": 1500,
+            "auto_route": True,
+            "strict_route": False,
+            "stack": "mixed",
+            "endpoint_independent_nat": True
+        }
+    ],
+    "outbounds": [
+        {
+            "type": "selector",
+            "tag": "默认代理",
+            "outbounds": [
+                "自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动", "直连"
+            ],
+            "default": "自动选择"
+        },
+        {
+            "type": "selector",
+            "tag": "AI",
+            "outbounds": [
+                "默认代理", "自动选择", "手动选择", "香港自动", "香港手动", "日本自动", "日本手动",
+                "狮城自动", "狮城手动", "美国自动", "美国手动", "台湾自动", "台湾手动", "直连"
+            ],
+            "default": "默认代理"
+        },
+        {
+            "type": "selector",
+            "tag": "YouTube",
+            "outbounds": [
+                "默认代理", "自动选择", "手动选择", "香港自动", "香港手动", "日本自动", "日本手动",
+                "狮城自动", "狮城手动", "美国自动", "美国手动", "台湾自动", "台湾手动", "直连"
+            ],
+            "default": "默认代理"
+        },
+        {
+            "type": "selector",
+            "tag": "Google",
+            "outbounds": [
+                "默认代理", "自动选择", "手动选择", "香港自动", "香港手动", "日本自动", "日本手动",
+                "狮城自动", "狮城手动", "美国自动", "美国手动", "台湾自动", "台湾手动", "直连"
+            ],
+            "default": "默认代理"
+        },
+        {
+            "type": "selector",
+            "tag": "Github",
+            "outbounds": [
+                "默认代理", "自动选择", "手动选择", "香港自动", "香港手动", "日本自动", "日本手动",
+                "狮城自动", "狮城手动", "美国自动", "美国手动", "台湾自动", "台湾手动", "直连"
+            ],
+            "default": "默认代理"
+        },
+        {
+            "type": "selector",
+            "tag": "Telegram",
+            "outbounds": [
+                "默认代理", "自动选择", "手动选择", "香港自动", "香港手动", "日本自动", "日本手动",
+                "狮城自动", "狮城手动", "美国自动", "美国手动", "台湾自动", "台湾手动", "直连"
+            ],
+            "default": "默认代理"
+        },
+        {
+            "type": "selector",
+            "tag": "TikTok",
+            "outbounds": [
+                "默认代理", "自动选择", "手动选择", "香港自动", "香港手动", "日本自动", "日本手动",
+                "狮城自动", "狮城手动", "美国自动", "美国手动", "台湾自动", "台湾手动", "直连"
+            ],
+            "default": "默认代理"
+        },
+        {
+            "type": "selector",
+            "tag": "Netflix",
+            "outbounds": [
+                "默认代理", "自动选择", "手动选择", "香港自动", "香港手动", "日本自动", "日本手动",
+                "狮城自动", "狮城手动", "美国自动", "美国手动", "台湾自动", "台湾手动", "直连"
+            ],
+            "default": "默认代理"
+        },
+        {
+            "type": "selector",
+            "tag": "Steam",
+            "outbounds": [
+                "默认代理", "自动选择", "手动选择", "香港自动", "香港手动", "日本自动", "日本手动",
+                "狮城自动", "狮城手动", "美国自动", "美国手动", "台湾自动", "台湾手动", "直连"
+            ],
+            "default": "默认代理"
+        },
+        {
+            "type": "selector",
+            "tag": "OneDrive",
+            "outbounds": [
+                "默认代理", "自动选择", "手动选择", "香港自动", "香港手动", "日本自动", "日本手动",
+                "狮城自动", "狮城手动", "美国自动", "美国手动", "台湾自动", "台湾手动", "直连"
+            ],
+            "default": "默认代理"
+        },
+        {
+            "type": "selector",
+            "tag": "Microsoft",
+            "outbounds": [
+                "默认代理", "自动选择", "手动选择", "香港自动", "香港手动", "日本自动", "日本手动",
+                "狮城自动", "狮城手动", "美国自动", "美国手动", "台湾自动", "台湾手动", "直连"
+            ],
+            "default": "默认代理"
+        },
+        {
+            "type": "selector",
+            "tag": "Apple",
+            "outbounds": [
+                "默认代理", "自动选择", "手动选择", "香港自动", "香港手动", "日本自动", "日本手动",
+                "狮城自动", "狮城手动", "美国自动", "美国手动", "台湾自动", "台湾手动", "直连"
+            ],
+            "default": "默认代理"
+        },
+        {
+            "type": "selector",
+            "tag": "Emby",
+            "outbounds": [
+                "默认代理", "自动选择", "手动选择", "香港自动", "香港手动", "日本自动", "日本手动",
+                "狮城自动", "狮城手动", "美国自动", "美国手动", "台湾自动", "台湾手动", "直连"
+            ],
+            "default": "默认代理"
+        },
+        {
+            "type": "selector",
+            "tag": "Wallet",
+            "outbounds": [
+                "默认代理", "自动选择", "手动选择", "香港自动", "香港手动", "日本自动", "日本手动",
+                "狮城自动", "狮城手动", "美国自动", "美国手动", "台湾自动", "台湾手动", "直连"
+            ],
+            "default": "默认代理"
+        },
+        {
+            "type": "selector",
+            "tag": "漏网之鱼",
+            "outbounds": [
+                "默认代理", "自动选择", "手动选择", "香港自动", "香港手动", "日本自动", "日本手动",
+                "狮城自动", "狮城手动", "美国自动", "美国手动", "台湾自动", "台湾手动", "直连"
+            ],
+            "default": "默认代理"
+        },
+        {
+            "type": "urltest",
+            "tag": "自动选择",
+            "outbounds": ["直连"],
+            "url": "http://www.gstatic.com/generate_204",
+            "interval": "3m",
+            "tolerance": 50
+        },
+        {
+            "type": "selector",
+            "tag": "手动选择",
+            "outbounds": ["直连"],
+            "default": "直连"
+        },
+        {
+            "type": "urltest",
+            "tag": "香港自动",
+            "outbounds": ["直连"],
+            "url": "http://www.gstatic.com/generate_204",
+            "interval": "5m",
+            "tolerance": 50
+        },
+        {"type": "selector", "tag": "香港手动", "outbounds": ["直连"], "default": "直连"},
+        {
+            "type": "urltest",
+            "tag": "日本自动",
+            "outbounds": ["直连"],
+            "url": "http://www.gstatic.com/generate_204",
+            "interval": "5m",
+            "tolerance": 50
+        },
+        {"type": "selector", "tag": "日本手动", "outbounds": ["直连"], "default": "直连"},
+        {
+            "type": "urltest",
+            "tag": "狮城自动",
+            "outbounds": ["直连"],
+            "url": "http://www.gstatic.com/generate_204",
+            "interval": "5m",
+            "tolerance": 50
+        },
+        {"type": "selector", "tag": "狮城手动", "outbounds": ["直连"], "default": "直连"},
+        {
+            "type": "urltest",
+            "tag": "美国自动",
+            "outbounds": ["直连"],
+            "url": "http://www.gstatic.com/generate_204",
+            "interval": "5m",
+            "tolerance": 50
+        },
+        {"type": "selector", "tag": "美国手动", "outbounds": ["直连"], "default": "直连"},
+        {
+            "type": "urltest",
+            "tag": "台湾自动",
+            "outbounds": ["直连"],
+            "url": "http://www.gstatic.com/generate_204",
+            "interval": "5m",
+            "tolerance": 50
+        },
+        {"type": "selector", "tag": "台湾手动", "outbounds": ["直连"], "default": "直连"},
+        {"type": "direct", "tag": "直连"}
+    ],
+    "route": {
+        "auto_detect_interface": True,
+        "default_domain_resolver": "ali",
+        "final": "漏网之鱼",
+        "rule_set": [
+            {
+                "tag": "geosite-openai",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs",
+                "download_detour": "直连"
+            },
+            {
+                "tag": "geosite-youtube",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-youtube.srs",
+                "download_detour": "直连"
+            },
+            {
+                "tag": "geosite-google",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-google.srs",
+                "download_detour": "直连"
+            },
+            {
+                "tag": "geosite-github",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-github.srs",
+                "download_detour": "直连"
+            },
+            {
+                "tag": "geosite-telegram",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-telegram.srs",
+                "download_detour": "直连"
+            },
+            {
+                "tag": "geoip-telegram",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://ghfast.top/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/telegram.srs",
+                "download_detour": "直连"
+            },
+            {
+                "tag": "geosite-tiktok",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-tiktok.srs",
+                "download_detour": "直连"
+            },
+            {
+                "tag": "geosite-netflix",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-netflix.srs",
+                "download_detour": "直连"
+            },
+            {
+                "tag": "geoip-netflix",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://ghfast.top/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/netflix.srs",
+                "download_detour": "直连"
+            },
+            {
+                "tag": "geosite-steam",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-steam.srs",
+                "download_detour": "直连"
+            },
+            {
+                "tag": "geosite-onedrive",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-onedrive.srs",
+                "download_detour": "直连"
+            },
+            {
+                "tag": "geosite-microsoft",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-microsoft.srs",
+                "download_detour": "直连"
+            },
+            {
+                "tag": "geosite-apple",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-apple.srs",
+                "download_detour": "直连"
+            },
+            {
+                "tag": "geosite-geolocation-!cn",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.srs",
+                "download_detour": "直连"
+            },
+            {
+                "tag": "geosite-cn",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
+                "download_detour": "直连"
+            },
+            {
+                "tag": "geoip-cn",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
+                "download_detour": "直连"
+            }
+        ],
+        "rules": [
+            {"action": "sniff"},
+            {"protocol": "dns", "action": "hijack-dns"},
+            {"port": 53, "action": "hijack-dns", "protocol": "dns"},
+            {"inbound": ["dns-in"], "action": "hijack-dns", "protocol": "dns"},
+            {"ip_is_private": True, "outbound": "直连"},
+            {"rule_set": ["geosite-openai"], "outbound": "AI"},
+            {
+                "domain_suffix": [
+                    "openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com",
+                    "anthropic.com", "claude.ai", "claude.com", "groq.com", "mistral.ai",
+                    "cohere.ai", "perplexity.ai", "deepseek.com", "x.ai"
+                ],
+                "outbound": "AI"
+            },
+            {"rule_set": ["geosite-youtube"], "outbound": "YouTube"},
+            {
+                "domain_suffix": [
+                    "youtube.com", "googlevideo.com", "ytimg.com", "youtu.be",
+                    "ggpht.com", "gvt1.com"
+                ],
+                "outbound": "YouTube"
+            },
+            {"rule_set": ["geosite-google"], "outbound": "Google"},
+            {
+                "domain_suffix": [
+                    "google.com", "googleapis.com", "gstatic.com", "googleusercontent.com",
+                    "1e100.net"
+                ],
+                "outbound": "Google"
+            },
+            {"rule_set": ["geosite-github"], "outbound": "Github"},
+            {
+                "domain_suffix": [
+                    "github.com", "githubassets.com", "githubusercontent.com",
+                    "ghcr.io", "github.io"
+                ],
+                "outbound": "Github"
+            },
+            {"rule_set": ["geosite-telegram", "geoip-telegram"], "outbound": "Telegram"},
+            {
+                "ip_cidr": [
+                    "91.108.4.0/22", "91.108.8.0/22", "91.108.12.0/22", "91.108.16.0/22",
+                    "91.108.56.0/22", "149.154.160.0/20", "185.76.151.0/24"
+                ],
+                "outbound": "Telegram"
+            },
+            {"domain_suffix": ["telegram.org", "t.me", "telegra.ph", "tdesktop.com"], "outbound": "Telegram"},
+            {"rule_set": ["geosite-tiktok"], "outbound": "TikTok"},
+            {
+                "domain_suffix": [
+                    "tiktok.com", "byteoversea.com", "ibytedtos.com", "musical.ly",
+                    "tiktokcdn.com", "tiktokv.com"
+                ],
+                "outbound": "TikTok"
+            },
+            {"rule_set": ["geosite-netflix", "geoip-netflix"], "outbound": "Netflix"},
+            {
+                "domain_suffix": [
+                    "netflix.com", "nflxvideo.net", "nflxext.com", "nflxso.net",
+                    "nflximg.net", "fast.com"
+                ],
+                "outbound": "Netflix"
+            },
+            {"rule_set": ["geosite-steam"], "outbound": "Steam"},
+            {
+                "domain_suffix": [
+                    "steampowered.com", "steamcommunity.com", "steamgames.com", "steamstatic.com"
+                ],
+                "outbound": "Steam"
+            },
+            {"rule_set": ["geosite-onedrive"], "outbound": "OneDrive"},
+            {"domain_suffix": ["onedrive.live.com", "1drv.ms", "sharepoint.com"], "outbound": "OneDrive"},
+            {"rule_set": ["geosite-microsoft"], "outbound": "Microsoft"},
+            {
+                "domain_suffix": [
+                    "microsoft.com", "live.com", "office.com", "azure.com", "bing.com", "msn.com"
+                ],
+                "outbound": "Microsoft"
+            },
+            {"rule_set": ["geosite-apple"], "outbound": "Apple"},
+            {
+                "domain_suffix": [
+                    "apple.com", "icloud.com", "aaplimg.com", "apple-cloudkit.com", "cdn-apple.com"
+                ],
+                "outbound": "Apple"
+            },
+            {
+                "domain_suffix": [
+                    "as174.de", "xmsl.org", "69yun69.com", "emby.wtf", "embymv.link", "gidd.tv", "emby.moe"
+                ],
+                "outbound": "Emby"
+            },
+            {"domain_suffix": ["paypal.com", "binance.com", "okx.com", "bybit.com", "bybit.biz"], "outbound": "Wallet"},
+            {"domain_suffix": CN_DOMAIN_SUFFIXES, "outbound": "直连"},
+            {"rule_set": ["geosite-cn", "geoip-cn"], "outbound": "直连"},
+            {"rule_set": ["geosite-geolocation-!cn"], "outbound": "默认代理"}
+        ]
+    }
+}
 
 def load_preset_dict():
     """始终使用并同步经过 sing-box 1.14.3 验证的预设模板"""
@@ -1068,7 +1688,13 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False):
     # 第一优先级: 所有代理节点自身的 server 域名强制走 direct_dns_tag ("ali" DoH)，绝不进 FakeIP
     # 第二优先级: geosite-cn 与国内常见域名后缀走 direct_dns_tag ("ali" DoH)
     # 第三优先级: 来自 tun-in / dns-in 的 A/AAAA 查询走 fakeip
-    clean_dns_rules = []
+    clean_dns_rules = [
+        # 阻断 HTTPS (Type 65) 查询，防止客户端启用 ECH 导致 TLS SNI 嗅探失效
+        {
+            "query_type": ["HTTPS"],
+            "action": "reject"
+        }
+    ]
     if proxy_server_domains:
         clean_dns_rules.append({
             "domain": sorted(list(proxy_server_domains)),
@@ -1852,6 +2478,18 @@ def build_config_with_preset(valid_external_nodes: list):
         "台湾": regions_map["台湾"]["nodes"],
     }
 
+    app_specific_groups = {
+        "AI", "YouTube", "Google", "Github", "Telegram", "TikTok",
+        "Netflix", "Steam", "OneDrive", "Microsoft", "Apple", "Emby",
+        "Wallet", "漏网之鱼"
+    }
+    base_cand = [
+        "默认代理", "自动选择", "手动选择",
+        "香港自动", "香港手动", "日本自动", "日本手动",
+        "狮城自动", "狮城手动", "美国自动", "美国手动",
+        "台湾自动", "台湾手动", "直连"
+    ]
+
     for ob in preset["outbounds"]:
         tag = ob.get("tag", "")
         if tag in ("自动选择", "手动选择"):
@@ -1867,6 +2505,12 @@ def build_config_with_preset(valid_external_nodes: list):
             if r_key in region_tags_map:
                 r_nodes = region_tags_map[r_key]
                 ob["outbounds"] = list(r_nodes) if r_nodes else ["直连"]
+        elif tag in app_specific_groups:
+            # 应用分流策略组: 支持指向主流快捷组，并注入所有具体订阅节点供用户精确自选
+            ob["outbounds"] = list(base_cand) + list(all_tags)
+            cur_def = ob.get("default")
+            if not cur_def or cur_def not in ob["outbounds"]:
+                ob["default"] = "默认代理"
 
     preset["outbounds"].extend(dedup_nodes)
     return sanitize_singbox_dict(preset)
@@ -2019,7 +2663,9 @@ class SingBoxManager:
                 json.dump(preset_data, f, indent=2, ensure_ascii=False)
 
         setup_gateway_network()
-        clear_stale_cache_files()
+        # Preserve cached FakeIP mappings and selected proxy groups on an
+        # ordinary service restart. Cache clearing is reserved for explicit
+        # subscription rebuilds and cache-reset actions.
         sanitize_config_file(CONFIG_PATH)
 
         try:
@@ -2320,9 +2966,26 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
+
+    def _require_auth(self):
+        password = ensure_webui_password()
+        supplied = ""
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Basic "):
+            try:
+                supplied = base64.b64decode(auth[6:], validate=True).decode("utf-8")
+            except Exception:
+                pass
+        expected = "admin:" + password
+        if hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
+            return True
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="Sing-Box WebUI", charset="UTF-8"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return False
 
     def _read_body_json(self):
         content_len = int(self.headers.get("Content-Length", 0))
@@ -2332,6 +2995,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         return json.loads(body)
 
     def do_GET(self):
+        if not self._require_auth():
+            return
         try:
             if self.path == "/api/status":
                 self._send_json(manager.get_status())
@@ -2370,6 +3035,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._send_json({"success": False, "error": str(e), "message": str(e)})
 
     def do_POST(self):
+        if not self._require_auth():
+            return
         try:
             if self.path == "/api/service/start":
                 ok, msg = manager.start()
@@ -2620,9 +3287,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._send_json({"success": False, "message": f"处理失败: {e}"})
 
 def run_server(port=9622):
+    webui_password = ensure_webui_password()
     load_preset_dict()
     if os.path.exists(CONFIG_PATH):
         sanitize_config_file(CONFIG_PATH)
+    # Restore routing and firewall state for the WebUI service itself as well
+    # as for the core. The core may already appear running after a service
+    # restart, which would otherwise skip manager.start() and leave DNS rules
+    # cleared by shutdown hooks.
+    setup_gateway_network()
 
     server_address = ("0.0.0.0", port)
     httpd = ThreadingHTTPServer(server_address, DashboardHandler)
@@ -2632,6 +3305,8 @@ def run_server(port=9622):
     print(" Sing-Box WebUI 仪表盘启动成功！")
     print(f" 监听地址: http://0.0.0.0:{port}")
     print(f" 本地访问: http://127.0.0.1:{port}")
+    print(" WebUI 账号: admin")
+    print(f" WebUI 密码: {webui_password}")
     print(" 极简低功耗设计，适用平台: amd64 / arm64 / armv7 等")
     print("=" * 60)
 
