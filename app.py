@@ -1950,6 +1950,43 @@ def _v2_selector(tag, members, default=None):
         ob["default"] = valid[0]
     return ob
 
+
+# 内置常用规则集 (DIY 分组下拉选择用, 全部经 sing-geosite/sing-geoip 验证存在)
+BUILTIN_RULESETS = [
+    {"id": "geosite:openai", "label": "OpenAI / ChatGPT", "category": "AI"},
+    {"id": "geosite:anthropic", "label": "Anthropic / Claude", "category": "AI"},
+    {"id": "geosite:deepseek", "label": "DeepSeek", "category": "AI"},
+    {"id": "geosite:xai", "label": "xAI / Grok", "category": "AI"},
+    {"id": "geosite:perplexity", "label": "Perplexity", "category": "AI"},
+    {"id": "geosite:google", "label": "Google 全家桶", "category": "Google"},
+    {"id": "geosite:youtube", "label": "YouTube", "category": "视频"},
+    {"id": "geosite:netflix", "label": "Netflix", "category": "视频"},
+    {"id": "geosite:disney", "label": "Disney+", "category": "视频"},
+    {"id": "geosite:twitch", "label": "Twitch", "category": "视频"},
+    {"id": "geosite:telegram", "label": "Telegram", "category": "社交"},
+    {"id": "geosite:tiktok", "label": "TikTok", "category": "社交"},
+    {"id": "geosite:twitter", "label": "Twitter / X", "category": "社交"},
+    {"id": "geosite:instagram", "label": "Instagram", "category": "社交"},
+    {"id": "geosite:facebook", "label": "Facebook", "category": "社交"},
+    {"id": "geosite:discord", "label": "Discord", "category": "社交"},
+    {"id": "geosite:github", "label": "GitHub", "category": "开发"},
+    {"id": "geosite:binance", "label": "Binance", "category": "Crypto"},
+    {"id": "geosite:apple", "label": "Apple", "category": "其他"},
+    {"id": "geosite:microsoft", "label": "Microsoft", "category": "其他"},
+    {"id": "geosite:amazon", "label": "Amazon", "category": "其他"},
+    {"id": "geosite:reddit", "label": "Reddit", "category": "其他"},
+    {"id": "geosite:spotify", "label": "Spotify", "category": "其他"},
+    {"id": "geosite:steam", "label": "Steam", "category": "其他"},
+    {"id": "geoip:cn", "label": "中国 IP", "category": "IP段"},
+    {"id": "geoip:us", "label": "美国 IP", "category": "IP段"},
+    {"id": "geoip:hk", "label": "香港 IP", "category": "IP段"},
+    {"id": "geoip:tw", "label": "台湾 IP", "category": "IP段"},
+    {"id": "geoip:jp", "label": "日本 IP", "category": "IP段"},
+    {"id": "geoip:sg", "label": "新加坡 IP", "category": "IP段"},
+    {"id": "geoip:kr", "label": "韩国 IP", "category": "IP段"},
+    {"id": "geoip:de", "label": "德国 IP", "category": "IP段"},
+]
+
 def _expand_ruleset_shorthand(url):
     """展开规则集简写: geosite:binance / geoip:us -> 完整 SRS 地址 (走 ghfast 镜像)"""
     u = url.strip()
@@ -2593,6 +2630,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._send_json(load_groups())
             elif self.path == "/api/selections":
                 self._send_json({"selections": load_selections()})
+            elif self.path == "/api/rulesets/builtin":
+                self._send_json({"rulesets": BUILTIN_RULESETS})
             elif self.path == "/api/settings":
                 self._send_json(load_settings())
             elif self.path in ["/api/proxies", "/api/nodes"]:
