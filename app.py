@@ -225,7 +225,9 @@ def setup_gateway_network():
                     append_log(f"DNS劫持规则已存在({proto}), 无需重复写入")
         except Exception:
             pass
-
+    else:
+        append_log("警告: 未找到 iptables 命令, 已跳过 FORWARD 放行/DNS劫持/MASQUERADE 规则配置; "
+                   "请先安装 iptables (如 apt-get install -y iptables) 后重启服务")
     # === 旁路由分流核心: 策略路由 (重启丢失, 每次启动必须恢复) ===
     # sing-box TUN auto_route 只接管本机发出的流量 (table 2022), 转发流量默认走 main 表直连,
     # 必须用这条规则把"从局域网网卡进来的包"也送进 table 2022 -> tun0 -> sing-box 内核分流。
