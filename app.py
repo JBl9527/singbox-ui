@@ -1568,14 +1568,12 @@ def _build_and_write_config(full_cfg, valid_external, use_preset):
     """用解析结果构建并写入 config.json，返回 (config_str, node_count, anytls_count)。
     v2: 始终用最小化构建器; 节点快照存 data/nodes.json 供分组变更时重建; 重建前捕获当前选择。"""
     capture_live_selections()
-    valid_external, blocked_cnt = _filter_blocked_nodes(valid_external or [])
-    if blocked_cnt:
-        append_log(f"已过滤 {blocked_cnt} 个信息节点(官网/流量/套餐/到期等)")
     save_nodes(valid_external)
     if use_preset or not full_cfg:
-        final_config = build_config_with_preset(valid_external)
+        final_config, node_count = build_config_with_preset(valid_external)
     else:
         final_config = sanitize_singbox_dict(full_cfg)
+        node_count = len(valid_external or [])
     final_config_str = json.dumps(final_config, indent=2, ensure_ascii=False)
     if os.path.exists(CONFIG_PATH):
         try:
@@ -1585,7 +1583,7 @@ def _build_and_write_config(full_cfg, valid_external, use_preset):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         f.write(final_config_str)
     anytls_count = sum(1 for n in valid_external if n.get("type") == "anytls")
-    return final_config_str, len(valid_external), anytls_count
+    return final_config_str, node_count, anytls_count
 
 
 def _apply_subscription_record(rec, preparsed=None):
@@ -1976,16 +1974,6 @@ def _is_blocked_node_tag(tag: str) -> bool:
         return True
     return False
 
-def _filter_blocked_nodes(nodes: list) -> tuple:
-    """过滤信息节点, 返回 (有效节点, 被过滤数)"""
-    kept, blocked = [], 0
-    for n in nodes:
-        if _is_blocked_node_tag(n.get("tag", "")):
-            blocked += 1
-        else:
-            kept.append(n)
-    return kept, blocked
-
 # 内置常用规则集 (DIY 分组下拉选择用, 全部经 sing-geosite/sing-geoip 验证存在)
 BUILTIN_RULESETS = [
     {"id": "geosite:openai", "label": "OpenAI / ChatGPT", "category": "AI"},
@@ -2063,19 +2051,26 @@ def build_config_with_preset(valid_external_nodes: list):
     settings = load_settings()
 
     seen, dedup_nodes, node_tags = set(), [], []
+    blocked_cnt = 0
     for ob in valid_external_nodes:
-        ob = dict(ob)
         tag = str(ob.get("tag", "")).strip()
         if not tag:
+            continue
+        if _is_blocked_node_tag(tag):
+            blocked_cnt += 1
             continue
         base, idx = tag, 2
         while tag in seen:
             tag = f"{base}-{idx}"
             idx += 1
-        ob["tag"] = tag
+        if tag != ob.get("tag"):
+            ob = dict(ob)  # 仅 tag 重名时才拷贝, 99% 情况零拷贝
+            ob["tag"] = tag
         seen.add(tag)
         node_tags.append(tag)
         dedup_nodes.append(ob)
+    if blocked_cnt:
+        append_log(f"已过滤 {blocked_cnt} 个信息节点(官网/流量/套餐/到期等)")
 
     # 按地区归类 (仅含非空地区)
     region_list = classify_nodes_by_region(dedup_nodes)  # [(地区名, [tags])]
@@ -2150,7 +2145,7 @@ def build_config_with_preset(valid_external_nodes: list):
     if settings.get("quic_block", True):
         rules.append({"network": "udp", "port": 443, "action": "reject"})
     cfg["route"]["rules"] = rules
-    return sanitize_singbox_dict(cfg)
+    return sanitize_singbox_dict(cfg), len(node_tags)
 
 def capture_live_selections():
     """从 clash API 读取各 selector 当前选择, 存入 selections.json (重建配置前调用)"""
@@ -2177,7 +2172,7 @@ def rebuild_and_restart(reason="配置重建"):
     """用 data/nodes.json + groups/selections/settings 重建配置并重启"""
     capture_live_selections()
     nodes = load_nodes()
-    cfg = build_config_with_preset(nodes)
+    cfg, _ = build_config_with_preset(nodes)
     cfg_str = json.dumps(cfg, indent=2, ensure_ascii=False)
     if os.path.exists(CONFIG_PATH):
         shutil.copy(CONFIG_PATH, os.path.join(DATA_DIR, "config.json.bak"))
@@ -2330,7 +2325,7 @@ class SingBoxManager:
 
         if not os.path.exists(CONFIG_PATH):
             # v2: 用保存的节点快照重建最小化配置 (无节点时为空配置, 仅直连)
-            preset_data = build_config_with_preset(load_nodes())
+            preset_data, _ = build_config_with_preset(load_nodes())
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(preset_data, f, indent=2, ensure_ascii=False)
             append_log("已按 v2 最小化模型重建 config.json")
@@ -2821,9 +2816,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     return
 
                 if use_preset or not full_cfg:
-                    final_config = build_config_with_preset(valid_external)
+                    final_config, _node_count = build_config_with_preset(valid_external)
                 else:
                     final_config = sanitize_singbox_dict(full_cfg)
+                    _node_count = len(valid_external or [])
 
                 final_config_str = json.dumps(final_config, indent=2, ensure_ascii=False)
 
@@ -2834,7 +2830,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
                 anytls_count = sum(1 for n in valid_external if n.get("type") == "anytls")
                 extra_info = f"（含 {anytls_count} 个 AnyTLS 节点）" if anytls_count else ""
-                append_log(f"订阅更新成功！共提取 {len(valid_external)} 个节点{extra_info}并注入分流策略组。")
+                append_log(f"订阅更新成功！共提取 {_node_count} 个节点{extra_info}并注入分流策略组。")
                 ok, restart_msg = manager.restart()
                 status_note = "核心已启动生效" if ok else f"但启动异常: {restart_msg}"
                 # 同步记入订阅仓库, 供"多订阅管理"列表展示与一键切换
@@ -2846,7 +2842,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 "name": f"订阅 {len(_store['subscriptions']) + 1}",
                                 "url": sub_url, "use_preset": bool(use_preset)}
                         _store["subscriptions"].append(_rec)
-                    _rec["node_count"] = len(valid_external)
+                    _rec["node_count"] = _node_count
                     _rec["anytls_count"] = anytls_count
                     _rec["updated_at"] = _now_str()
                     if ok:
