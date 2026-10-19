@@ -467,21 +467,29 @@ def to_bool(val) -> bool:
     return False
 
 def classify_nodes_by_region(nodes):
-    """根据节点 tag 智能归类地区"""
-    regions = {
-        "香港": {"keywords": ["hk", "hongkong", "hong kong", "香港", "🇭🇰"], "nodes": []},
-        "日本": {"keywords": ["jp", "japan", "日本", "东京", "大阪", "🇯🇵"], "nodes": []},
-        "狮城": {"keywords": ["sg", "singapore", "新加坡", "狮城", "🇸🇬"], "nodes": []},
-        "美国": {"keywords": ["us", "united states", "america", "美国", "洛杉矶", "圣何塞", "硅谷", "西雅图", "纽约", "🇺🇸", "🇺🇲"], "nodes": []},
-        "台湾": {"keywords": ["tw", "taiwan", "台湾", "台北", "🇹🇼"], "nodes": []},
-    }
+    """根据节点 tag 智能归类地区, 返回 [(地区名, [节点tag...])] (仅含非空地区, 按固定顺序)"""
+    regions = [
+        ("香港", ["hk", "hongkong", "hong kong", "香港", "🇭🇰"]),
+        ("台湾", ["tw", "taiwan", "台湾", "台北", "🇹🇼"]),
+        ("日本", ["jp", "japan", "日本", "东京", "大阪", "🇯🇵"]),
+        ("狮城", ["sg", "singapore", "新加坡", "狮城", "🇸🇬"]),
+        ("美国", ["us", "united states", "america", "美国", "洛杉矶", "圣何塞", "硅谷", "西雅图", "纽约", "🇺🇸", "🇺🇲"]),
+        ("韩国", ["kr", "korea", "韩国", "首尔", "🇰🇷"]),
+        ("英国", ["uk", "britain", "england", "英国", "伦敦", "🇬🇧"]),
+        ("德国", ["de", "germany", "german", "德国", "法兰克福", "🇩🇪"]),
+        ("法国", ["fr", "france", "french", "法国", "巴黎", "🇫🇷"]),
+        ("荷兰", ["nl", "netherlands", "dutch", "荷兰", "阿姆斯特丹", "🇳🇱"]),
+        ("加拿大", ["ca", "canada", "加拿大", "多伦多", "🇨🇦"]),
+        ("澳大利亚", ["au", "australia", "澳大利亚", "悉尼", "🇦🇺"]),
+    ]
+    buckets = {name: [] for name, _ in regions}
     for n in nodes:
         tag_lower = n.get("tag", "").lower()
-        for r_name, r_data in regions.items():
-            if any(k in tag_lower for k in r_data["keywords"]):
-                r_data["nodes"].append(n["tag"])
+        for r_name, keywords in regions:
+            if any(k in tag_lower for k in keywords):
+                buckets[r_name].append(n["tag"])
                 break
-    return regions
+    return [(name, tags) for name, tags in [(n, buckets[n]) for n, _ in regions] if tags]
 
 def sanitize_tls_object(tls_in, server_host="", top_sni=None, top_insecure=None, top_alpn=None, top_fp=None, force_enable=False):
     """构建并清洗符合 sing-box 1.14 规范的出站 TLS 对象"""
@@ -1982,6 +1990,11 @@ def build_config_with_preset(valid_external_nodes: list):
         node_tags.append(tag)
         dedup_nodes.append(ob)
 
+    # 按地区归类 (仅含非空地区)
+    region_list = classify_nodes_by_region(dedup_nodes)  # [(地区名, [tags])]
+    region_auto_tags = [f"{r}自动" for r, _ in region_list]
+    region_manual_tags = [f"{r}手动" for r, _ in region_list]
+
     cfg = _v2_base_config()
     outbounds = []
     outbounds.extend(dedup_nodes)
@@ -1993,16 +2006,27 @@ def build_config_with_preset(valid_external_nodes: list):
         "url": "http://www.gstatic.com/generate_204",
         "interval": "3m", "tolerance": 50,
     })
-    outbounds.append(_v2_selector("默认代理", ["自动选择", "手动选择", "直连"],
+    # 各地区自动/手动组
+    for r_name, r_tags in region_list:
+        outbounds.append({
+            "type": "urltest", "tag": f"{r_name}自动",
+            "outbounds": r_tags,
+            "url": "http://www.gstatic.com/generate_204",
+            "interval": "5m", "tolerance": 50,
+        })
+        outbounds.append(_v2_selector(f"{r_name}手动", r_tags, selections.get(f"{r_name}手动")))
+    proxy_members = ["自动选择", "手动选择"] + region_auto_tags + region_manual_tags + ["直连"]
+    outbounds.append(_v2_selector("默认代理", proxy_members,
                                   selections.get("默认代理", "自动选择")))
     diy_names = []
+    diy_members = ["默认代理", "自动选择", "手动选择"] + region_auto_tags + region_manual_tags + ["直连"]
     for g in groups:
         name = str(g.get("name", "")).strip()
-        if not name or name in ("直连", "默认代理", "自动选择", "手动选择", "漏网之鱼"):
+        if not name or name in ("直连", "默认代理", "自动选择", "手动选择", "漏网之鱼") \
+                or name in region_auto_tags or name in region_manual_tags:
             continue
         diy_names.append(name)
-        outbounds.append(_v2_selector(name, ["默认代理", "自动选择", "手动选择", "直连"],
-                                      selections.get(name, "默认代理")))
+        outbounds.append(_v2_selector(name, diy_members, selections.get(name, "默认代理")))
     outbounds.append(_v2_selector("漏网之鱼", ["默认代理", "直连"],
                                   selections.get("漏网之鱼", "默认代理")))
     cfg["outbounds"] = outbounds
