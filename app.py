@@ -94,9 +94,50 @@ def ensure_tun_available() -> bool:
     except Exception:
         return False
 
+def _get_gateway_ifaces():
+    """
+    获取旁路由模式下需要接管的局域网物理网卡列表:
+    排除 lo / tun0 / docker / veth 等虚拟接口, 保留配置了私有 IPv4 地址的网卡。
+    多网卡机器 (如 eth0 接 LAN、eth1 接 WAN) 会全部返回, 确保转发流量无遗漏。
+    """
+    ifaces = set()
+    try:
+        res = subprocess.run(["ip", "-4", "-o", "addr", "show"], capture_output=True, text=True, timeout=3)
+        for line in res.stdout.splitlines():
+            m = re.match(r"^\d+:\s+(\S+)\s+inet\s+(\S+)", line)
+            if not m:
+                continue
+            name, addr = m.group(1), m.group(2)
+            if name in ("lo", "tun0") or name.startswith(("docker", "veth", "br-", "virbr", "tun")):
+                continue
+            try:
+                if ipaddress.ip_address(addr.split("/")[0]).is_private:
+                    ifaces.add(name)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    # 兜底: 私有地址扫描无结果时, 回退到默认路由的出接口 (排除 tun0)
+    if not ifaces:
+        try:
+            res = subprocess.run(["ip", "-4", "route", "show", "table", "main", "default"],
+                                 capture_output=True, text=True, timeout=3)
+            for line in res.stdout.splitlines():
+                m = re.search(r"\bdev\s+(\S+)", line)
+                if m and m.group(1) != "tun0":
+                    ifaces.add(m.group(1))
+        except Exception:
+            pass
+    return sorted(ifaces)
+
+
 def setup_gateway_network():
     """
     自动配置 Linux 单臂旁路由 / 透明网关底层内核参数与防火墙转发规则
+
+    注意: ip rule / iptables 规则都是内存状态, 重启即丢失。install.sh 只在安装时配置一次,
+    因此本函数在每次服务启动时都会重新全量恢复, 保证重启后旁路由分流依然生效。
+    核心链路: 局域网转发流量 --(ip rule iif <lan> table 2022)--> tun0 --> sing-box 内核规则分流
     """
     if os.name == "nt":
         return
@@ -139,8 +180,43 @@ def setup_gateway_network():
                 chk = subprocess.run(["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", main_iface, "-j", "MASQUERADE"], capture_output=True, timeout=2)
                 if chk.returncode != 0:
                     subprocess.run(["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", main_iface, "-j", "MASQUERADE"], capture_output=True, timeout=2)
+            # FORWARD 放行 tun0 双向流量 (转发路径必经)
+            for fwd_args in (["-I", "FORWARD", "-i", "tun0", "-j", "ACCEPT"],
+                             ["-I", "FORWARD", "-o", "tun0", "-j", "ACCEPT"]):
+                try:
+                    subprocess.run(["iptables"] + fwd_args, capture_output=True, timeout=2)
+                except Exception:
+                    pass
+            # DNS 劫持: 局域网所有 53 端口请求重定向到本机 53,
+            # 由 sing-box dns-in (0.0.0.0:53) + hijack-dns 接管做 FakeIP 解析,
+            # 否则局域网 DNS 直连会导致域名分流规则对转发流量失效
+            for proto in ("udp", "tcp"):
+                base = ["-t", "nat", "PREROUTING", "-p", proto, "--dport", "53",
+                        "-j", "REDIRECT", "--to-ports", "53"]
+                chk = subprocess.run(["iptables"] + ["-C"] + base, capture_output=True, timeout=2)
+                if chk.returncode != 0:
+                    subprocess.run(["iptables"] + ["-I"] + base, capture_output=True, timeout=2)
         except Exception:
             pass
+
+    # === 旁路由分流核心: 策略路由 (重启丢失, 每次启动必须恢复) ===
+    # sing-box TUN auto_route 只接管本机发出的流量 (table 2022), 转发流量默认走 main 表直连,
+    # 必须用这条规则把"从局域网网卡进来的包"也送进 table 2022 -> tun0 -> sing-box 内核分流。
+    # 缺了它, 局域网流量完全绕过 sing-box, 即"流量不经过内核分流"。
+    if shutil.which("ip"):
+        for lan_iface in _get_gateway_ifaces():
+            try:
+                # 先删后加, 保证幂等且优先级正确
+                subprocess.run(["ip", "-4", "rule", "del", "iif", lan_iface, "table", "2022"],
+                               capture_output=True, timeout=2)
+                add = subprocess.run(["ip", "-4", "rule", "add", "iif", lan_iface, "table", "2022", "pref", "15000"],
+                                     capture_output=True, timeout=2)
+                if add.returncode == 0:
+                    append_log(f"旁路由策略路由已恢复: iif {lan_iface} -> table 2022 (pref 15000)")
+                else:
+                    append_log(f"旁路由策略路由配置失败({lan_iface}): {(add.stderr or '').strip()[:120]}")
+            except Exception as e:
+                append_log(f"旁路由策略路由配置异常({lan_iface}): {e}")
 
 VALID_PROXY_TYPES = {
     "anytls", "vless", "vmess", "shadowsocks", "trojan", "hysteria", "hysteria2",
