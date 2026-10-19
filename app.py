@@ -1995,6 +1995,7 @@ BUILTIN_RULESETS = [
     {"id": "geosite:github", "label": "GitHub", "category": "开发"},
     {"id": "geosite:binance", "label": "Binance", "category": "Crypto"},
     {"id": "geosite:bybit", "label": "Bybit", "category": "Crypto"},
+    {"id": "builtin:wallet", "label": "Wallet 加密货币全集 (64关键词/216后缀)", "category": "Crypto"},
     {"id": "geosite:apple", "label": "Apple", "category": "其他"},
     {"id": "geosite:microsoft", "label": "Microsoft", "category": "其他"},
     {"id": "geosite:amazon", "label": "Amazon", "category": "其他"},
@@ -2026,8 +2027,24 @@ def _expand_ruleset_shorthand(url):
     return u
 
 def _ensure_user_ruleset(url):
-    """下载用户规则集(srs)到 data/rulesets/, 返回 rule_set tag; 失败返回 None"""
+    """准备用户规则集到 data/rulesets/, 返回 (tag, format); 失败返回 (None, None)。
+    支持 builtin:wallet (仓库自带, 免下载)。"""
     url = _expand_ruleset_shorthand(url)
+    # 内置规则集: 从 templates 复制到 data (升级不丢失用户数据, 模板随程序更新)
+    if url.strip().lower() == "builtin:wallet":
+        try:
+            src = os.path.join(BASE_DIR, "templates", "rulesets", "wallet.json")
+            dest_dir = os.path.join(DATA_DIR, "rulesets")
+            os.makedirs(dest_dir, exist_ok=True)
+            dest = os.path.join(dest_dir, "builtin-wallet.json")
+            if not os.path.exists(dest) or os.path.getsize(dest) == 0:
+                import shutil
+                shutil.copy(src, dest)
+                append_log("内置 Wallet 规则集已就绪 (64关键词/216后缀)")
+            return "builtin-wallet", "source"
+        except Exception as e:
+            append_log(f"内置 Wallet 规则集准备失败: {e}")
+            return None, None
     import hashlib
     try:
         d = hashlib.md5(url.encode()).hexdigest()[:12]
@@ -2040,10 +2057,10 @@ def _ensure_user_ruleset(url):
             with urllib.request.urlopen(req, timeout=30) as r, open(dest, "wb") as f:
                 f.write(r.read())
             append_log(f"规则集已下载: {tag} <- {url[:60]}")
-        return tag
+        return tag, "binary"
     except Exception as e:
         append_log(f"规则集下载失败: {url[:60]} ({e})")
-        return None
+        return None, None
 
 def build_config_with_preset(valid_external_nodes: list):
     """v2: 最小化构建 - 节点 + 内建5组 + DIY分组, 选择从 selections.json 恢复"""
@@ -2133,13 +2150,14 @@ def build_config_with_preset(valid_external_nodes: list):
         if g.get("ip_cidr"):
             rules.append({"ip_cidr": list(dict.fromkeys(g["ip_cidr"])), "outbound": name})
         for url in g.get("ruleset_urls", []) or []:
-            tag = _ensure_user_ruleset(str(url).strip())
+            tag, fmt = _ensure_user_ruleset(str(url).strip())
             if tag:
                 # 注册到 rule_set
                 rs_list = cfg["route"].setdefault("rule_set", [])
                 if not any(r.get("tag") == tag for r in rs_list):
-                    rs_list.append({"tag": tag, "type": "local", "format": "binary",
-                                    "path": os.path.join(DATA_DIR, "rulesets", f"{tag}.srs")})
+                    ext = "json" if fmt == "source" else "srs"
+                    rs_list.append({"tag": tag, "type": "local", "format": fmt,
+                                    "path": os.path.join(DATA_DIR, "rulesets", f"{tag}.{ext}")})
                 rules.append({"rule_set": [tag], "outbound": name})
     rules.append({"domain_suffix": CN_DOMAIN_SUFFIXES, "outbound": "直连"})
     rules.append({"rule_set": ["geosite-cn", "geoip-cn"], "outbound": "直连"})
