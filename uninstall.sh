@@ -75,33 +75,12 @@ if command -v ip &> /dev/null; then
             lo|tun0|docker*|veth*|br-*|virbr*|tun*) continue ;;
         esac
         ip -4 rule del iif "$iface" table 2022 2>/dev/null || true
-        if command -v iptables &>/dev/null; then
-            while iptables -C FORWARD -i "$iface" -o tun0 -j ACCEPT 2>/dev/null; do
-                iptables -D FORWARD -i "$iface" -o tun0 -j ACCEPT 2>/dev/null || break
-            done
-            while iptables -C FORWARD -i tun0 -o "$iface" -j ACCEPT 2>/dev/null; do
-                iptables -D FORWARD -i tun0 -o "$iface" -j ACCEPT 2>/dev/null || break
-            done
-        fi
     done < <(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | awk '{print $1}')
     echo -e "${GREEN}✔ 旁路由策略路由规则 (table 2022) 已清理${NC}"
 fi
 if command -v iptables &> /dev/null; then
     iptables -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || true
     iptables -t nat -D PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || true
-    # Remove rules inserted by older releases; they opened all forwarding traffic.
-    for legacy in "-i tun0 -j ACCEPT" "-o tun0 -j ACCEPT" "-j ACCEPT"; do
-        while iptables -C FORWARD $legacy 2>/dev/null; do
-            iptables -D FORWARD $legacy 2>/dev/null || break
-        done
-    done
-    if iptables -S DOCKER-USER >/dev/null 2>&1; then
-        for legacy in "-i tun0 -j ACCEPT" "-o tun0 -j ACCEPT" "-j ACCEPT"; do
-            while iptables -C DOCKER-USER $legacy 2>/dev/null; do
-                iptables -D DOCKER-USER $legacy 2>/dev/null || break
-            done
-        done
-    fi
     echo -e "${GREEN}✔ DNS 劫持重定向规则已清理${NC}"
 fi
 
