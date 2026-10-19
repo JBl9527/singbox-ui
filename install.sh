@@ -325,6 +325,9 @@ else
     smart_download "${GITHUB_RAW_BASE}/app.py" "$INSTALL_DIR/app.py"
     smart_download "${GITHUB_RAW_BASE}/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
     smart_download "${GITHUB_RAW_BASE}/static/index.html" "$INSTALL_DIR/static/index.html"
+    smart_download "${GITHUB_RAW_BASE}/static/rulesets_full.json" "$INSTALL_DIR/static/rulesets_full.json"
+    mkdir -p "$INSTALL_DIR/templates/rulesets"
+    smart_download "${GITHUB_RAW_BASE}/templates/rulesets/wallet.json" "$INSTALL_DIR/templates/rulesets/wallet.json"
 
 fi
 
