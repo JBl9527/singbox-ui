@@ -329,216 +329,7 @@ CN_DOMAIN_SUFFIXES = [
 
 # 内置 sing-box 1.14.3 标准旁路由预设模板
 # 关键设计: "ali" 使用 https (DoH 443端口)，彻底避开 TUN 对 UDP 53 端口的自动劫持回环 (Issue #2643)
-DEFAULT_PRESET_CONFIG = {
-    "log": {
-        "level": "info",
-        "timestamp": True
-    },
-    "experimental": {
-        "cache_file": {
-            "enabled": True,
-            "path": "cache.db",
-            "store_fakeip": True,
-            "store_dns": True
-        },
-        "clash_api": {
-            "external_controller": "0.0.0.0:9090",
-            "default_mode": "Rule"
-        }
-    },
-    "dns": {
-        "servers": [
-            {
-                "type": "https",
-                "tag": "ali",
-                "server": "223.5.5.5",
-                "server_port": 443,
-                "path": "/dns-query"
-            },
-            {
-                "type": "https",
-                "tag": "dnspod",
-                "server": "1.12.12.12",
-                "server_port": 443,
-                "path": "/dns-query"
-            },
-            {
-                "type": "https",
-                "tag": "remote",
-                "server": "1.1.1.1",
-                "server_port": 443,
-                "path": "/dns-query",
-                "domain_resolver": "ali",
-                "detour": "默认代理"
-            },
-            {
-                "type": "fakeip",
-                "tag": "fakeip",
-                "inet4_range": "198.18.0.0/15",
-                "inet6_range": "fc00::/18"
-            }
-        ],
-        "rules": [
-            {
-                "rule_set": ["geosite-cn"],
-                "action": "route",
-                "server": "ali"
-            },
-            {
-                "domain_suffix": CN_DOMAIN_SUFFIXES,
-                "action": "route",
-                "server": "ali"
-            },
-            {
-                "inbound": ["tun-in", "dns-in"],
-                "query_type": ["A", "AAAA"],
-                "action": "route",
-                "server": "fakeip",
-                "rewrite_ttl": 1
-            }
-        ],
-        "final": "remote",
-        "strategy": "ipv4_only"
-    },
-    "inbounds": [
-        {
-            "type": "direct",
-            "tag": "dns-in",
-            "listen": "0.0.0.0",
-            "listen_port": 53
-        },
-        {
-            "type": "mixed",
-            "tag": "mixed-in",
-            "listen": "0.0.0.0",
-            "listen_port": 2080
-        },
-        {
-            "type": "tun",
-            "tag": "tun-in",
-            "interface_name": "tun0",
-            "address": ["172.19.0.1/30"],
-            "mtu": 1500,
-            "auto_route": True,
-            "strict_route": False,
-            "stack": "system"
-        }
-    ],
-    "outbounds": [
-        {
-            "type": "selector",
-            "tag": "默认代理",
-            "outbounds": ["自动选择", "手动选择", "香港自动", "日本自动", "狮城自动", "美国自动", "台湾自动", "直连"],
-            "default": "自动选择"
-        },
-        {
-            "type": "urltest",
-            "tag": "自动选择",
-            "outbounds": ["直连"],
-            "url": "http://www.gstatic.com/generate_204",
-            "interval": "3m",
-            "tolerance": 50
-        },
-        {
-            "type": "selector",
-            "tag": "手动选择",
-            "outbounds": ["直连"],
-            "default": "直连"
-        },
-        {
-            "type": "urltest",
-            "tag": "香港自动",
-            "outbounds": ["直连"],
-            "url": "http://www.gstatic.com/generate_204",
-            "interval": "5m",
-            "tolerance": 50
-        },
-        {
-            "type": "urltest",
-            "tag": "日本自动",
-            "outbounds": ["直连"],
-            "url": "http://www.gstatic.com/generate_204",
-            "interval": "5m",
-            "tolerance": 50
-        },
-        {
-            "type": "urltest",
-            "tag": "狮城自动",
-            "outbounds": ["直连"],
-            "url": "http://www.gstatic.com/generate_204",
-            "interval": "5m",
-            "tolerance": 50
-        },
-        {
-            "type": "urltest",
-            "tag": "美国自动",
-            "outbounds": ["直连"],
-            "url": "http://www.gstatic.com/generate_204",
-            "interval": "5m",
-            "tolerance": 50
-        },
-        {
-            "type": "urltest",
-            "tag": "台湾自动",
-            "outbounds": ["直连"],
-            "url": "http://www.gstatic.com/generate_204",
-            "interval": "5m",
-            "tolerance": 50
-        },
-        {
-            "type": "direct",
-            "tag": "直连"
-        }
-    ],
-    "route": {
-        "auto_detect_interface": True,
-        "default_domain_resolver": "ali",
-        "final": "默认代理",
-        "rule_set": [
-            {
-                "type": "remote",
-                "tag": "geosite-cn",
-                "format": "binary",
-                "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
-                "download_detour": "直连"
-            },
-            {
-                "type": "remote",
-                "tag": "geoip-cn",
-                "format": "binary",
-                "url": "https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
-                "download_detour": "直连"
-            }
-        ],
-        "rules": [
-            {
-                "action": "sniff"
-            },
-            {
-                "type": "logical",
-                "mode": "or",
-                "rules": [
-                    {"inbound": ["dns-in"]},
-                    {"protocol": "dns"},
-                    {"port": 53}
-                ],
-                "action": "hijack-dns"
-            },
-            {
-                "ip_is_private": True,
-                "outbound": "直连"
-            },
-            {
-                "domain_suffix": CN_DOMAIN_SUFFIXES,
-                "outbound": "直连"
-            },
-            {
-                "rule_set": ["geosite-cn", "geoip-cn"],
-                "outbound": "直连"
-            }
-        ]
-    }
-}
+DEFAULT_PRESET_CONFIG = {'log': {'level': 'info', 'timestamp': True}, 'experimental': {'cache_file': {'enabled': True, 'path': 'cache.db', 'store_fakeip': True, 'store_dns': True}, 'clash_api': {'external_controller': '0.0.0.0:9090', 'external_ui': 'ui', 'default_mode': 'Rule'}}, 'dns': {'servers': [{'type': 'udp', 'tag': 'ali', 'server': '223.5.5.5', 'server_port': 53}, {'type': 'local', 'tag': 'local'}, {'type': 'https', 'tag': 'remote', 'server': '1.1.1.1', 'server_port': 443, 'path': '/dns-query', 'domain_resolver': 'ali', 'detour': '默认代理'}, {'type': 'fakeip', 'tag': 'fakeip', 'inet4_range': '198.18.0.0/15', 'inet6_range': 'fc00::/18'}], 'rules': [{'domain_suffix': ['.cn', '.baidu.com', '.qq.com', '.taobao.com', '.tmall.com', '.alicdn.com', '.aliyun.com', '.jd.com', '.163.com', '.126.com', '.bilibili.com', '.hdslb.com', '.douyin.com', '.weibo.com', '.wechat.com', '.weixin.qq.com', '.mi.com', '.xiaomi.com'], 'action': 'route', 'server': 'ali'}, {'rule_set': ['geosite-cn'], 'action': 'route', 'server': 'ali'}, {'inbound': ['dns-in', 'tun-in'], 'query_type': ['A', 'AAAA'], 'action': 'route', 'server': 'fakeip', 'rewrite_ttl': 1}], 'final': 'remote', 'strategy': 'ipv4_only'}, 'inbounds': [{'type': 'direct', 'tag': 'dns-in', 'listen': '0.0.0.0', 'listen_port': 53}, {'type': 'mixed', 'tag': 'mixed-in', 'listen': '0.0.0.0', 'listen_port': 2080}, {'type': 'tun', 'tag': 'tun-in', 'interface_name': 'tun0', 'address': ['172.19.0.1/30'], 'mtu': 1500, 'auto_route': True, 'strict_route': False, 'stack': 'mixed', 'endpoint_independent_nat': True}], 'outbounds': [{'type': 'selector', 'tag': '默认代理', 'outbounds': ['自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '自动选择'}, {'type': 'selector', 'tag': 'AI', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'YouTube', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Google', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Github', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Telegram', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'TikTok', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Netflix', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Steam', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'OneDrive', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Microsoft', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Apple', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Emby', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': 'Wallet', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'selector', 'tag': '漏网之鱼', 'outbounds': ['默认代理', '自动选择', '香港自动', '香港手动', '日本自动', '日本手动', '狮城自动', '狮城手动', '美国自动', '美国手动', '台湾自动', '台湾手动', '直连'], 'default': '默认代理'}, {'type': 'urltest', 'tag': '自动选择', 'outbounds': ['直连'], 'url': 'http://www.gstatic.com/generate_204', 'interval': '3m', 'tolerance': 50}, {'type': 'selector', 'tag': '手动选择', 'outbounds': ['直连'], 'default': '直连'}, {'type': 'urltest', 'tag': '香港自动', 'outbounds': ['直连'], 'url': 'http://www.gstatic.com/generate_204', 'interval': '5m', 'tolerance': 50}, {'type': 'selector', 'tag': '香港手动', 'outbounds': ['直连'], 'default': '直连'}, {'type': 'urltest', 'tag': '日本自动', 'outbounds': ['直连'], 'url': 'http://www.gstatic.com/generate_204', 'interval': '5m', 'tolerance': 50}, {'type': 'selector', 'tag': '日本手动', 'outbounds': ['直连'], 'default': '直连'}, {'type': 'urltest', 'tag': '狮城自动', 'outbounds': ['直连'], 'url': 'http://www.gstatic.com/generate_204', 'interval': '5m', 'tolerance': 50}, {'type': 'selector', 'tag': '狮城手动', 'outbounds': ['直连'], 'default': '直连'}, {'type': 'urltest', 'tag': '美国自动', 'outbounds': ['直连'], 'url': 'http://www.gstatic.com/generate_204', 'interval': '5m', 'tolerance': 50}, {'type': 'selector', 'tag': '美国手动', 'outbounds': ['直连'], 'default': '直连'}, {'type': 'urltest', 'tag': '台湾自动', 'outbounds': ['直连'], 'url': 'http://www.gstatic.com/generate_204', 'interval': '5m', 'tolerance': 50}, {'type': 'selector', 'tag': '台湾手动', 'outbounds': ['直连'], 'default': '直连'}, {'type': 'direct', 'tag': '直连'}], 'route': {'auto_detect_interface': True, 'default_domain_resolver': 'ali', 'final': '漏网之鱼', 'rule_set': [{'tag': 'geosite-cn', 'type': 'remote', 'format': 'binary', 'url': 'https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs', 'download_detour': '直连'}, {'tag': 'geoip-cn', 'type': 'remote', 'format': 'binary', 'url': 'https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs', 'download_detour': '直连'}], 'rules': [{'action': 'sniff'}, {'protocol': 'dns', 'action': 'hijack-dns'}, {'port': 53, 'action': 'hijack-dns', 'protocol': 'dns'}, {'inbound': ['dns-in'], 'action': 'hijack-dns', 'protocol': 'dns'}, {'ip_is_private': True, 'outbound': '直连'}, {'domain_suffix': ['openai.com', 'chatgpt.com', 'anthropic.com', 'claude.ai', 'oaistatic.com', 'oaiusercontent.com', 'groq.com', 'mistral.ai', 'cohere.ai', 'perplexity.ai'], 'outbound': 'AI'}, {'domain_suffix': ['youtube.com', 'googlevideo.com', 'ytimg.com', 'youtu.be'], 'outbound': 'YouTube'}, {'domain_suffix': ['google.com', 'googleapis.com', 'gstatic.com', 'googleusercontent.com'], 'outbound': 'Google'}, {'domain_suffix': ['github.com', 'githubassets.com', 'githubusercontent.com'], 'outbound': 'Github'}, {'domain_suffix': ['telegram.org', 't.me', 'telegra.ph', 'tdesktop.com'], 'outbound': 'Telegram'}, {'domain_suffix': ['tiktok.com', 'byteoversea.com', 'ibytedtos.com'], 'outbound': 'TikTok'}, {'domain_suffix': ['netflix.com', 'nflxvideo.net', 'nflxext.com', 'nflxso.net'], 'outbound': 'Netflix'}, {'domain_suffix': ['steampowered.com', 'steamcommunity.com', 'steamgames.com', 'steamstatic.com'], 'outbound': 'Steam'}, {'domain_suffix': ['onedrive.live.com', '1drv.ms', 'sharepoint.com'], 'outbound': 'OneDrive'}, {'domain_suffix': ['microsoft.com', 'live.com', 'office.com', 'azure.com', 'bing.com', 'msn.com'], 'outbound': 'Microsoft'}, {'domain_suffix': ['apple.com', 'icloud.com', 'aaplimg.com', 'apple-cloudkit.com'], 'outbound': 'Apple'}, {'domain_suffix': ['as174.de', 'xmsl.org', '69yun69.com', 'emby.wtf', 'embymv.link', 'gidd.tv', 'emby.moe'], 'outbound': 'Emby'}, {'domain_suffix': ['paypal.com', 'binance.com', 'okx.com'], 'outbound': 'Wallet'}, {'domain_suffix': ['.cn', '.baidu.com', '.qq.com', '.taobao.com', '.tmall.com', '.alicdn.com', '.aliyun.com', '.jd.com', '.163.com', '.126.com', '.bilibili.com', '.hdslb.com', '.douyin.com', '.weibo.com', '.wechat.com', '.weixin.qq.com', '.mi.com', '.xiaomi.com'], 'outbound': '直连'}, {'rule_set': ['geosite-cn', 'geoip-cn'], 'outbound': '直连'}]}}
 
 def load_preset_dict():
     """始终使用并同步经过 sing-box 1.14.3 验证的预设模板"""
@@ -911,6 +702,27 @@ def migrate_legacy_dns_server(srv: dict, fakeip_cfg: dict):
         s.pop("detour", None)
 
     return s, None
+
+def _harden_route_rules(rules, direct_tag, main_proxy_tag, valid_tags):
+    """加固已有的 route.rules：保留调用方的精细化分流意图，仅确保三条安全不变量：
+    1) 首条为 sniff；2) hijack-dns 出现在首个 ip_is_private 规则之前（防 DNS 回环）；
+    3) 所有 outbound 引用必须有效，无效的一律改写（私有流量→直连，其余→主代理组）。"""
+    clean = [dict(r) for r in rules if isinstance(r, dict)]
+    if not clean or clean[0].get("action") != "sniff":
+        clean.insert(0, {"action": "sniff"})
+    first_private = next((i for i, r in enumerate(clean) if r.get("ip_is_private") is True), None)
+    scope = clean[:first_private] if first_private is not None else clean
+    if not any(r.get("action") == "hijack-dns" for r in scope):
+        hijack_rule = {"type": "logical", "mode": "or",
+                       "rules": [{"protocol": "dns"}, {"port": 53}],
+                       "action": "hijack-dns"}
+        clean.insert(first_private if first_private is not None else 1, hijack_rule)
+    for r in clean:
+        ob = r.get("outbound")
+        if isinstance(ob, str) and ob not in valid_tags:
+            r["outbound"] = direct_tag if r.get("ip_is_private") else main_proxy_tag
+    return clean
+
 
 def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False):
     """全面清理与修复配置，彻底解决 TUN + FakeIP 下的 DNS 回环重置问题"""
@@ -1322,7 +1134,12 @@ def sanitize_singbox_dict(cfg_dict, force_disable_tun: bool = False):
             "outbound": direct_tag
         })
 
-    route_cfg["rules"] = standard_route_rules
+    existing_rules = route_cfg.get("rules")
+    if isinstance(existing_rules, list) and any(isinstance(r, dict) for r in existing_rules):
+        # 调用方自带精细化分流规则(如预设模板的 AI/YouTube/Google 分组): 保留意图，仅做安全加固
+        route_cfg["rules"] = _harden_route_rules(existing_rules, direct_tag, main_proxy_tag, valid_tags)
+    else:
+        route_cfg["rules"] = standard_route_rules
 
     # --- 5. 修复 Experimental ---
     exp_cfg = cfg_dict.get("experimental")
