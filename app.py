@@ -1568,6 +1568,9 @@ def _build_and_write_config(full_cfg, valid_external, use_preset):
     """用解析结果构建并写入 config.json，返回 (config_str, node_count, anytls_count)。
     v2: 始终用最小化构建器; 节点快照存 data/nodes.json 供分组变更时重建; 重建前捕获当前选择。"""
     capture_live_selections()
+    valid_external, blocked_cnt = _filter_blocked_nodes(valid_external or [])
+    if blocked_cnt:
+        append_log(f"已过滤 {blocked_cnt} 个信息节点(官网/流量/套餐/到期等)")
     save_nodes(valid_external)
     if use_preset or not full_cfg:
         final_config = build_config_with_preset(valid_external)
@@ -1955,6 +1958,33 @@ def _v2_selector(tag, members, default=None):
         ob["default"] = valid[0]
     return ob
 
+
+# 订阅节点 tag 黑名单: 命中则视为信息节点(官网/流量/套餐/到期等)直接丢弃, 不计入节点
+NODE_TAG_BLOCKLIST = [
+    "官网", "剩余", "流量", "套餐", "免费", "订阅", "全球直连", "到期时间",
+    "expire", "traffic",
+]
+# "GB" 单独处理: 仅当 tag 含数字+GB (如 100GB) 时视为流量信息节点, 避免误伤正常节点名
+import re as _re
+_GB_INFO_PATTERN = _re.compile(r"\d\s*gb", _re.I)
+
+def _is_blocked_node_tag(tag: str) -> bool:
+    t = (tag or "").lower()
+    if any(kw.lower() in t for kw in NODE_TAG_BLOCKLIST):
+        return True
+    if _GB_INFO_PATTERN.search(t):
+        return True
+    return False
+
+def _filter_blocked_nodes(nodes: list) -> tuple:
+    """过滤信息节点, 返回 (有效节点, 被过滤数)"""
+    kept, blocked = [], 0
+    for n in nodes:
+        if _is_blocked_node_tag(n.get("tag", "")):
+            blocked += 1
+        else:
+            kept.append(n)
+    return kept, blocked
 
 # 内置常用规则集 (DIY 分组下拉选择用, 全部经 sing-geosite/sing-geoip 验证存在)
 BUILTIN_RULESETS = [
