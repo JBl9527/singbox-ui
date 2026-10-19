@@ -154,9 +154,13 @@
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
         <span>订阅导入与预设</span>
       </button>
-      <button onclick="switchTab('metacubexdTab')" id="tabBtn-metacubexdTab" class="tab-btn px-4 py-2 text-sm font-medium rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition whitespace-nowrap flex items-center space-x-1.5 cursor-pointer">
+      <button onclick="switchTab('groupsTab')" id="tabBtn-groupsTab" class="tab-btn px-4 py-2 text-sm font-medium rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition whitespace-nowrap flex items-center space-x-1.5 cursor-pointer">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/></svg>
+        <span>🏷️ 策略分组 DIY</span>
+      </button>
+      <button onclick="switchTab('dashboardTab')" id="tabBtn-dashboardTab" class="tab-btn px-4 py-2 text-sm font-medium rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition whitespace-nowrap flex items-center space-x-1.5 cursor-pointer">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
-        <span>🎯 MetaCubeX 监控仪表盘 (Metacubexd)</span>
+        <span>📊 节点管理面板 (Zashboard)</span>
       </button>
       <button onclick="switchTab('configTab')" id="tabBtn-configTab" class="tab-btn px-4 py-2 text-sm font-medium rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition whitespace-nowrap cursor-pointer">
         运行配置 (JSON)
@@ -184,7 +188,7 @@
             <button onclick="cleanCache()" class="px-3.5 py-1.5 text-xs bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-xl transition flex items-center space-x-1.5 cursor-pointer" title="粉碎 cache.db 并以当前订阅纯净重构">
               <span>🧹 深度清理缓存并重启</span>
             </button>
-            <button onclick="switchTab('metacubexdTab')" class="px-3.5 py-1.5 text-xs bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 rounded-xl transition flex items-center space-x-1 cursor-pointer">
+            <button onclick="switchTab('dashboardTab')" class="px-3.5 py-1.5 text-xs bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 rounded-xl transition flex items-center space-x-1 cursor-pointer">
               <span>前往 MetaCubeX 仪表盘 ➔</span>
             </button>
           </div>
@@ -263,22 +267,155 @@
       </div>
     </section>
 
+    <!-- Tab: 策略分组 DIY -->
+    <section id="groupsTab" class="tab-content hidden space-y-4">
+      <div class="bg-gray-900 border border-gray-800 rounded-2xl p-4">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-1">
+          <div>
+            <h2 class="text-sm font-semibold text-white">🏷️ 策略分组 DIY</h2>
+            <p class="text-xs text-gray-400 mt-0.5">从上往下匹配，先命中先生效。每个分组自动生成一个同名策略组（可选节点：默认代理 / 自动选择 / 手动选择 / 直连）。中国直连与漏网之鱼为内建规则，无需配置。</p>
+          </div>
+          <button onclick="openGroupEditor(null)" class="px-3.5 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg shadow transition cursor-pointer">＋ 新建分组</button>
+        </div>
+        <div id="groupsList" class="space-y-2 mt-3"></div>
+      </div>
+
+      <!-- 新建/编辑分组弹窗 -->
+      <div id="groupEditor" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+        <div class="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-5">
+          <h3 id="groupEditorTitle" class="text-sm font-semibold text-white mb-4">新建分组</h3>
+          <input type="hidden" id="geId">
+          <label class="block text-xs text-gray-400 mb-1">分组名称 *</label>
+          <input id="geName" class="w-full mb-3 px-3 py-2 text-sm bg-gray-800 border border-gray-700 rounded-lg text-white" placeholder="如 AI、YouTube、Wallet">
+          <label class="block text-xs text-gray-400 mb-1">完整域名（每行一个，精确匹配）</label>
+          <textarea id="geDomains" rows="2" class="w-full mb-3 px-3 py-2 text-sm bg-gray-800 border border-gray-700 rounded-lg text-white" placeholder="如 api.openai.com"></textarea>
+          <label class="block text-xs text-gray-400 mb-1">域名后缀（每行一个，匹配子域名）</label>
+          <textarea id="geSuffix" rows="3" class="w-full mb-3 px-3 py-2 text-sm bg-gray-800 border border-gray-700 rounded-lg text-white" placeholder="如 openai.com&#10;claude.ai"></textarea>
+          <label class="block text-xs text-gray-400 mb-1">关键词（每行一个，域名包含即匹配）</label>
+          <textarea id="geKeywords" rows="2" class="w-full mb-3 px-3 py-2 text-sm bg-gray-800 border border-gray-700 rounded-lg text-white" placeholder="如 bybit"></textarea>
+          <label class="block text-xs text-gray-400 mb-1">IP 段 CIDR（每行一个）</label>
+          <textarea id="geCidr" rows="2" class="w-full mb-3 px-3 py-2 text-sm bg-gray-800 border border-gray-700 rounded-lg text-white" placeholder="如 1.2.3.0/24"></textarea>
+          <label class="block text-xs text-gray-400 mb-1">规则集链接（.srs，每行一个，自动下载）</label>
+          <textarea id="geRuleset" rows="2" class="w-full mb-4 px-3 py-2 text-sm bg-gray-800 border border-gray-700 rounded-lg text-white" placeholder="https://.../geosite-google.srs"></textarea>
+          <div class="flex justify-end space-x-2">
+            <button onclick="closeGroupEditor()" class="px-4 py-2 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg border border-gray-700 cursor-pointer">取消</button>
+            <button onclick="saveGroup()" class="px-4 py-2 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg cursor-pointer">保存并重建配置</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <script>
+    async function loadGroups() {
+      try {
+        const r = await fetch('/api/groups');
+        const d = await r.json();
+        renderGroups(d.groups || []);
+      } catch (e) { console.error(e); }
+    }
+    function condSummary(g) {
+      const parts = [];
+      if ((g.domains||[]).length) parts.push(`域名×${g.domains.length}`);
+      if ((g.domain_suffix||[]).length) parts.push(`后缀×${g.domain_suffix.length}`);
+      if ((g.keywords||[]).length) parts.push(`关键词×${g.keywords.length}`);
+      if ((g.ip_cidr||[]).length) parts.push(`IP段×${g.ip_cidr.length}`);
+      if ((g.ruleset_urls||[]).length) parts.push(`规则集×${g.ruleset_urls.length}`);
+      return parts.join(' ') || '<span class="text-gray-600">无条件（不会命中）</span>';
+    }
+    function renderGroups(groups) {
+      const el = document.getElementById('groupsList');
+      if (!groups.length) {
+        el.innerHTML = '<p class="text-xs text-gray-500 py-4 text-center">暂无自定义分组，点击右上「新建分组」添加。初始仅中国内外分流：国内直连、国外走默认代理。</p>';
+        return;
+      }
+      el.innerHTML = groups.map((g, i) => `
+        <div class="bg-gray-800/60 border border-gray-700 rounded-xl p-3 flex items-center justify-between gap-3">
+          <div class="flex items-center gap-3 min-w-0">
+            <span class="text-xs text-gray-500 font-mono w-6">${i+1}</span>
+            <div class="min-w-0">
+              <div class="text-sm font-medium text-white truncate">${escHtml(g.name)}</div>
+              <div class="text-[11px] text-gray-400 truncate">${condSummary(g)}</div>
+            </div>
+          </div>
+          <div class="flex items-center gap-1 shrink-0">
+            <button onclick="moveGroup('${g.id}',-1)" ${i===0?'disabled':''} class="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 disabled:opacity-30 text-gray-300 rounded cursor-pointer" title="上移">↑</button>
+            <button onclick="moveGroup('${g.id}',1)" ${i===groups.length-1?'disabled':''} class="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 disabled:opacity-30 text-gray-300 rounded cursor-pointer" title="下移">↓</button>
+            <button onclick="openGroupEditor('${g.id}')" class="px-2.5 py-1 text-xs bg-gray-800 hover:bg-gray-700 text-indigo-300 rounded cursor-pointer">编辑</button>
+            <button onclick="deleteGroup('${g.id}','${escHtml(g.name)}')" class="px-2.5 py-1 text-xs bg-gray-800 hover:bg-red-900 text-red-300 rounded cursor-pointer">删除</button>
+          </div>
+        </div>`).join('');
+    }
+    function escHtml(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    let _groupsCache = [];
+    async function refreshGroupsCache(){ const r = await fetch('/api/groups'); const d = await r.json(); _groupsCache = d.groups || []; }
+    function openGroupEditor(gid) {
+      document.getElementById('geId').value = gid || '';
+      const g = gid ? _groupsCache.find(x => x.id === gid) : null;
+      document.getElementById('groupEditorTitle').innerText = g ? `编辑分组：${g.name}` : '新建分组';
+      document.getElementById('geName').value = g ? g.name : '';
+      document.getElementById('geName').disabled = !!g;
+      document.getElementById('geDomains').value = g ? (g.domains||[]).join('\n') : '';
+      document.getElementById('geSuffix').value = g ? (g.domain_suffix||[]).join('\n') : '';
+      document.getElementById('geKeywords').value = g ? (g.keywords||[]).join('\n') : '';
+      document.getElementById('geCidr').value = g ? (g.ip_cidr||[]).join('\n') : '';
+      document.getElementById('geRuleset').value = g ? (g.ruleset_urls||[]).join('\n') : '';
+      document.getElementById('groupEditor').classList.remove('hidden');
+    }
+    function closeGroupEditor() { document.getElementById('groupEditor').classList.add('hidden'); }
+    function lines(id){ return document.getElementById(id).value.split('\n').map(s=>s.trim()).filter(Boolean); }
+    async function saveGroup() {
+      const gid = document.getElementById('geId').value;
+      const body = {
+        name: document.getElementById('geName').value.trim(),
+        domains: lines('geDomains'), domain_suffix: lines('geSuffix'),
+        keywords: lines('geKeywords'), ip_cidr: lines('geCidr'),
+        ruleset_urls: lines('geRuleset'),
+      };
+      if (!body.name) { showToast('分组名称不能为空', false); return; }
+      showToast('正在保存并重建配置...');
+      const url = gid ? `/api/groups/${gid}` : '/api/groups';
+      const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+      const d = await r.json();
+      closeGroupEditor();
+      await loadGroups(); await refreshGroupsCache();
+      showToast(d.message || (d.success ? '已保存' : '失败'), !!d.success);
+    }
+    async function deleteGroup(gid, name) {
+      if (!confirm(`确定删除分组「${name}」？配置将重建。`)) return;
+      const r = await fetch(`/api/groups/${gid}`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({_delete:true})});
+      const d = await r.json();
+      await loadGroups(); await refreshGroupsCache();
+      showToast(d.message || '已删除', !!d.success);
+    }
+    async function moveGroup(gid, dir) {
+      const ids = _groupsCache.map(g => g.id);
+      const i = ids.indexOf(gid);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= ids.length) return;
+      [ids[i], ids[j]] = [ids[j], ids[i]];
+      const r = await fetch('/api/groups/reorder', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ids})});
+      const d = await r.json();
+      await loadGroups(); await refreshGroupsCache();
+      showToast(d.message || '排序已更新', !!d.success);
+    }
+    </script>
+
     <!-- Tab 2: MetaCubeX 监控仪表盘 (Metacubexd) -->
-    <section id="metacubexdTab" class="tab-content hidden space-y-4">
+    <section id="dashboardTab" class="tab-content hidden space-y-4">
       <div class="bg-gray-900 border border-gray-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 class="text-sm font-semibold text-white flex items-center space-x-2">
-            <span>🚀 MetaCubeX 监控仪表盘 (Metacubexd)</span>
+            <span>📊 节点管理面板 (Zashboard)</span>
             <span class="text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800">Clash API :9090</span>
           </h2>
           <p class="text-xs text-gray-400 mt-0.5">实时网络流量吞吐、活跃连接透视监控、节点真连接延迟测速与分流规则命中追踪。</p>
         </div>
         <div class="flex items-center space-x-2">
-          <button onclick="reloadMetacubexdFrame()" class="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg border border-gray-700 transition flex items-center space-x-1 cursor-pointer">
+          <button onclick="reloadDashboardFrame()" class="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg border border-gray-700 transition flex items-center space-x-1 cursor-pointer">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
             <span>刷新面板</span>
           </button>
-          <button onclick="openMetacubexdNewTab()" class="px-3.5 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg shadow transition flex items-center space-x-1 cursor-pointer">
+          <button onclick="openDashboardNewTab()" class="px-3.5 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg shadow transition flex items-center space-x-1 cursor-pointer">
             <span>新标签页全屏打开</span>
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
           </button>
@@ -287,7 +424,7 @@
 
       <!-- 内嵌 Metacubexd 仪表盘容器 -->
       <div class="relative w-full rounded-2xl border border-gray-800 overflow-hidden bg-gray-950 shadow-2xl">
-        <iframe id="metacubexdFrame" src="" class="w-full h-[820px] border-0" allow="clipboard-read; clipboard-write"></iframe>
+        <iframe id="dashboardFrame" src="" class="w-full h-[820px] border-0" allow="clipboard-read; clipboard-write"></iframe>
       </div>
     </section>
 
@@ -353,28 +490,28 @@
   </div>
 
   <script>
-    function getMetacubexdUrl() {
+    function getDashboardUrl() {
       const host = window.location.hostname || '127.0.0.1';
-      return `/ui/?hostname=${encodeURIComponent(host)}&port=9090&secret=`;
+      return `/ui/?hostname=${encodeURIComponent(host)}&port=9090`;
     }
 
     function loadMetacubexdFrame() {
       const frame = document.getElementById('metacubexdFrame');
       if (frame && (!frame.src || frame.src === 'about:blank' || !frame.src.includes('/ui/'))) {
-        frame.src = getMetacubexdUrl();
+        frame.src = getDashboardUrl();
       }
     }
 
-    function reloadMetacubexdFrame() {
+    function reloadDashboardFrame() {
       const frame = document.getElementById('metacubexdFrame');
       if (frame) {
-        frame.src = getMetacubexdUrl() + '&t=' + Date.now();
-        showToast('正在重新连接 MetaCubeX 仪表盘...');
+        frame.src = getDashboardUrl() + '&t=' + Date.now();
+        showToast('正在重新连接 Zashboard...');
       }
     }
 
-    function openMetacubexdNewTab() {
-      window.open(getMetacubexdUrl(), '_blank');
+    function openDashboardNewTab() {
+      window.open(getDashboardUrl(), '_blank');
     }
 
     function showToast(msg, isSuccess = true) {
@@ -390,6 +527,7 @@
     }
 
     function switchTab(tabId) {
+      if (tabId === 'groupsTab') { loadGroups(); refreshGroupsCache(); }
       document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
       document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.classList.remove('bg-indigo-600', 'text-white');
@@ -633,7 +771,7 @@
         if (data.config) document.getElementById('configEditor').value = data.config;
         updateStatus();
         setTimeout(() => {
-          reloadMetacubexdFrame();
+          reloadDashboardFrame();
         }, 800);
       } catch (e) {
         showToast('切换订阅失败: ' + e, false);
@@ -654,7 +792,7 @@
         if (data.config) document.getElementById('configEditor').value = data.config;
         updateStatus();
         setTimeout(() => {
-          reloadMetacubexdFrame();
+          reloadDashboardFrame();
         }, 800);
       } catch (e) {
         showToast('刷新订阅失败: ' + e, false);
@@ -710,8 +848,8 @@
           updateStatus();
           if (applyNow) {
             setTimeout(() => {
-              switchTab('metacubexdTab');
-              reloadMetacubexdFrame();
+              switchTab('dashboardTab');
+              reloadDashboardFrame();
             }, 1200);
           }
         }
@@ -731,7 +869,7 @@
         loadCurrentConfig();
         loadSubscriptions();
         setTimeout(() => {
-          reloadMetacubexdFrame();
+          reloadDashboardFrame();
         }, 1000);
       } catch (e) {
         showToast('清理缓存请求失败: ' + e, false);
@@ -817,7 +955,7 @@
       loadSubscriptions();
       updateStatus();
       const topLink = document.getElementById('topMetacubexdLink');
-      if (topLink) topLink.href = getMetacubexdUrl();
+      if (topLink) topLink.href = getDashboardUrl();
 
       setInterval(updateStatus, 3000);
       setInterval(() => {
@@ -828,5 +966,6 @@
       }, 2000);
     });
   </script>
+<script>document.addEventListener('DOMContentLoaded', () => { refreshGroupsCache(); });</script>
 </body>
 </html>
