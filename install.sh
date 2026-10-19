@@ -149,6 +149,10 @@ else
     if [ -d "/etc/modules-load.d" ]; then
         echo "tun" > /etc/modules-load.d/singbox-tun.conf
     fi
+    # DNS 劫持依赖 NAT/REDIRECT 内核模块, 缺失时 iptables 静默加不上规则; 尽力加载
+    for _mod in xt_REDIRECT nf_nat iptable_nat nf_conntrack; do
+        modprobe "$_mod" 2>/dev/null || true
+    done
     if [ -f "/etc/modules" ] && ! grep -q "^tun$" /etc/modules 2>/dev/null; then
         echo "tun" >> /etc/modules
     fi
@@ -248,6 +252,22 @@ if ! command -v python3 &> /dev/null || ! command -v curl &> /dev/null || ! comm
     fi
 fi
 echo -e "${GREEN}✔ 基础环境检查完毕: $(python3 --version)${NC}"
+
+# 旁路由转发依赖 iptables(DNS劫持/MASQUERADE/FORWARD), 缺失时静默跳过会导致分流不完整, 必须独立检查
+if ! command -v iptables &> /dev/null; then
+    echo -e "${YELLOW}未检测到 iptables, 正在安装 (旁路由 DNS 劫持与转发规则依赖它)...${NC}"
+    if command -v apt-get &> /dev/null; then
+        apt-get update -y && apt-get install -y iptables nftables iproute2 || true
+    elif command -v yum &> /dev/null; then
+        yum install -y iptables nftables iproute || true
+    elif command -v apk &> /dev/null; then
+        apk add --no-cache iptables nftables iproute2 || true
+    elif command -v pacman &> /dev/null; then
+        pacman -Sy --noconfirm iptables nftables iproute2 || true
+    fi
+fi
+command -v iptables &> /dev/null && echo -e "${GREEN}✔ iptables 就绪: $(iptables --version)${NC}" \
+    || echo -e "${RED}✘ iptables 仍不可用, DNS劫持/MASQUERADE 规则将无法配置${NC}"
 
 # 4. 识别芯片架构
 echo -e "\n${BLUE}[3/6] 检测 CPU 芯片架构...${NC}"
@@ -390,10 +410,6 @@ if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
     ufw allow 9090/tcp >/dev/null 2>&1 || true
     ufw allow 53/tcp >/dev/null 2>&1 || true
     ufw allow 53/udp >/dev/null 2>&1 || true
-    if [ -f "/etc/default/ufw" ]; then
-        sed -i 's/DEFAULT_FORWARD_POLICY="DROP"/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw 2>/dev/null || true
-        ufw reload >/dev/null 2>&1 || true
-    fi
 elif command -v firewall-cmd &> /dev/null && systemctl is-active firewalld &> /dev/null; then
     echo -e "配置 Firewalld 防火墙放行端口 ${PORT}、2080、9090 与 53 (DNS)..."
     firewall-cmd --add-port=${PORT}/tcp --add-port=2080/tcp --add-port=9090/tcp --add-port=53/tcp --add-port=53/udp --permanent >/dev/null 2>&1 || true
@@ -401,28 +417,106 @@ elif command -v firewall-cmd &> /dev/null && systemctl is-active firewalld &> /d
 fi
 
 # iptables 底层转发、NAT MASQUERADE 与策略路由注入 (保障旁路由网关模式下局域网其他设备能够顺利转发)
-iptables -P FORWARD ACCEPT 2>/dev/null || true
-iptables -I FORWARD -j ACCEPT 2>/dev/null || true
-iptables -I FORWARD -i tun0 -j ACCEPT 2>/dev/null || true
-iptables -I FORWARD -o tun0 -j ACCEPT 2>/dev/null || true
-if iptables -L DOCKER-USER >/dev/null 2>&1; then
-    iptables -I DOCKER-USER -i tun0 -j ACCEPT 2>/dev/null || true
-    iptables -I DOCKER-USER -o tun0 -j ACCEPT 2>/dev/null || true
-    iptables -I DOCKER-USER -j ACCEPT 2>/dev/null || true
+# 注意: 以下 ip rule / iptables 规则均为内存状态, 重启即丢失; app.py 每次服务启动时会自动全量恢复,
+# 这里仅保证"安装当时"立即生效。
+# Keep the host's FORWARD policy intact. The service installs narrowly scoped
+# LAN-to-TUN rules below and checks them before adding, so restarts stay idempotent.
+# 收集所有配置了私有 IPv4 的局域网物理网卡 (多网卡全覆盖, 排除 lo/tun0/虚拟网卡)
+LAN_IFACES=""
+while IFS= read -r line; do
+    IFNAME=$(echo "$line" | awk -F': ' '{print $2}' | awk '{print $1}')
+    IPADDR=$(echo "$line" | grep -oP 'inet \K[0-9.]+' | head -n 1)
+    case "$IFNAME" in
+        lo|tun0|docker*|veth*|br-*|virbr*|tun*) continue ;;
+    esac
+    case "$IPADDR" in
+        10.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*|192.168.*) LAN_IFACES="$LAN_IFACES $IFNAME" ;;
+    esac
+done < <(ip -4 -o addr show 2>/dev/null)
+# 兜底: 未扫到私有地址网卡时回退到默认路由出接口
+if [ -z "$LAN_IFACES" ]; then
+    LAN_IFACES=$(ip route show default 2>/dev/null | awk '/dev/ {for(i=1;i<=NF;i++) if($i=="dev" && $(i+1)!="tun0") print $(i+1)}' | head -n 1)
 fi
-PHYS_DEV=$(ip route show default 2>/dev/null | awk '/dev/ {for(i=1;i<=NF;i++) if($i=="dev" && $(i+1)!="tun0") print $(i+1)}' | head -n 1)
+PHYS_DEV=$(echo "$LAN_IFACES" | awk '{print $1}')
 if [ -n "$PHYS_DEV" ]; then
-    iptables -t nat -C POSTROUTING -o "$PHYS_DEV" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o "$PHYS_DEV" -j MASQUERADE 2>/dev/null || true
-    # 策略路由: 确保来自物理网卡的局域网入站转发流量送入 table 2022 (tun0)
-    ip rule del iif "$PHYS_DEV" table 2022 2>/dev/null || true
-    ip rule add iif "$PHYS_DEV" table 2022 pref 15000 2>/dev/null || true
+    while iptables -t nat -D POSTROUTING -o "$PHYS_DEV" -j MASQUERADE 2>/dev/null; do :; done
+    while iptables -t nat -D POSTROUTING -o "$PHYS_DEV" -m conntrack --ctstate NEW -j MASQUERADE 2>/dev/null; do :; done
+    iptables -t nat -C POSTROUTING -o "$PHYS_DEV" -m conntrack --ctstate NEW --ctdir ORIGINAL -j MASQUERADE 2>/dev/null || \
+        iptables -t nat -A POSTROUTING -o "$PHYS_DEV" -m conntrack --ctstate NEW --ctdir ORIGINAL -j MASQUERADE 2>/dev/null || true
 fi
-# 强制将所有 53 端口 DNS 请求重定向至本地 53 端口 (sing-box 0.0.0.0:53 dns-in 内核 hijack-dns)
-iptables -t nat -C PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || iptables -t nat -I PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || true
-iptables -t nat -C PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || iptables -t nat -I PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || true
+# 策略路由 (分流核心): 确保来自局域网网卡的入站转发流量送入 table 2022 (tun0 -> sing-box 内核)
+# 缺了这条规则, 转发流量走 main 表直连出公网, 完全绕过 sing-box 分流
+for IFACE in $LAN_IFACES; do
+    [ -z "$IFACE" ] && continue
+    ip -4 rule del iif "$IFACE" table 2022 2>/dev/null || true
+    ip -4 rule add iif "$IFACE" table 2022 pref 15000 2>/dev/null || true
+    iptables -C FORWARD -i "$IFACE" -o tun0 -j ACCEPT 2>/dev/null || \
+        iptables -I FORWARD -i "$IFACE" -o tun0 -j ACCEPT 2>/dev/null || true
+    iptables -C FORWARD -i tun0 -o "$IFACE" -j ACCEPT 2>/dev/null || \
+        iptables -I FORWARD -i tun0 -o "$IFACE" -j ACCEPT 2>/dev/null || true
+done
+# 强制将局域网 53 端口 DNS 请求重定向至本地 53 端口。
+# policy routing 会让 addrtype/fib 的 LOCAL 判断误判网关自身地址；改为显式豁免本机 IPv4。
+LOCAL_IPS=$(ip -4 -o addr show 2>/dev/null | awk '{split($4,a,"/"); print a[1]}' | sort -u)
+if [ -n "$PHYS_DEV" ]; then
+    for PROTO in udp tcp; do
+        for LOCAL_IP in $LOCAL_IPS; do
+            iptables -t nat -C POSTROUTING -o "$PHYS_DEV" -p "$PROTO" --sport 53 \
+                -m conntrack --ctorigdst "$LOCAL_IP" -j SNAT --to-source "$LOCAL_IP" 2>/dev/null || \
+                iptables -t nat -I POSTROUTING 1 -o "$PHYS_DEV" -p "$PROTO" --sport 53 \
+                    -m conntrack --ctorigdst "$LOCAL_IP" -j SNAT --to-source "$LOCAL_IP" 2>/dev/null || true
+        done
+    done
+fi
+for PROTO in udp tcp; do
+    while iptables -t nat -D PREROUTING -p "$PROTO" --dport 53 -j REDIRECT --to-ports 53 2>/dev/null; do :; done
+    while iptables -t nat -D PREROUTING -p "$PROTO" --dport 53 -m addrtype ! --dst-type LOCAL -j REDIRECT --to-ports 53 2>/dev/null; do :; done
+    for LOCAL_IP in $LOCAL_IPS; do
+        iptables -t nat -C PREROUTING -p "$PROTO" -d "$LOCAL_IP" --dport 53 -j RETURN 2>/dev/null || \
+            iptables -t nat -I PREROUTING -p "$PROTO" -d "$LOCAL_IP" --dport 53 -j RETURN 2>/dev/null || true
+    done
+    iptables -t nat -C PREROUTING -p "$PROTO" --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || \
+        iptables -t nat -A PREROUTING -p "$PROTO" --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || true
+done
 
 # 8. 注册 systemd 开机自启服务并立即启动
 echo -e "\n${BLUE}[6/6] 注册开机自启服务并启动所有组件...${NC}"
+mkdir -p "$INSTALL_DIR/data"
+if [ ! -s "$INSTALL_DIR/data/webui_password" ]; then
+    if [ -z "${WEBUI_PASSWORD:-}" ] && [ -t 0 ]; then
+        echo -e "${YELLOW}首次安装 WebUI，请设置登录密码（至少 12 个字符）。${NC}"
+        echo "直接按 Enter 可生成随机密码。"
+        while true; do
+            read -r -s -p "WebUI 密码: " WEBUI_PASSWORD
+            echo
+            if [ -z "$WEBUI_PASSWORD" ]; then
+                break
+            fi
+            if [ "${#WEBUI_PASSWORD}" -lt 12 ]; then
+                echo "密码至少需要 12 个字符，请重试。"
+                WEBUI_PASSWORD=""
+                continue
+            fi
+            read -r -s -p "再次输入密码确认: " WEBUI_PASSWORD_CONFIRM
+            echo
+            if [ "$WEBUI_PASSWORD" = "$WEBUI_PASSWORD_CONFIRM" ]; then
+                break
+            fi
+            echo "两次输入不一致，请重试。"
+            WEBUI_PASSWORD=""
+        done
+    fi
+    if [ -z "${WEBUI_PASSWORD:-}" ]; then
+        WEBUI_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
+    elif [ "${#WEBUI_PASSWORD}" -lt 12 ]; then
+        echo "WEBUI_PASSWORD 环境变量至少需要 12 个字符。" >&2
+        exit 1
+    fi
+    umask 077
+    printf '%s\n' "$WEBUI_PASSWORD" > "$INSTALL_DIR/data/webui_password"
+fi
+chmod 600 "$INSTALL_DIR/data/webui_password"
+WEBUI_PASSWORD=$(cat "$INSTALL_DIR/data/webui_password")
 cat <<EOF > /etc/systemd/system/singbox-ui.service
 [Unit]
 Description=Sing-Box WebUI Dashboard & Core Service
@@ -463,6 +557,8 @@ echo -e "${GREEN}===============================================================
 echo -e "  ▶ 外网访问地址: ${CYAN}http://${PUBLIC_IP}:${PORT}${NC}"
 echo -e "  ▶ 内网访问地址: ${CYAN}http://${LOCAL_IP}:${PORT}${NC}"
 echo -e "  ▶ 本机回环地址: ${CYAN}http://127.0.0.1:${PORT}${NC}"
+echo -e "  ▶ WebUI 账号:    ${CYAN}admin${NC}"
+echo -e "  ▶ WebUI 密码:    ${CYAN}${WEBUI_PASSWORD}${NC}"
 echo -e "  ✔ 系统环境:    ${PURPLE}${VIRT_DESC}${NC}"
 echo -e "  ✔ 内核状态:    ${GREEN}已随系统自启，内核正在运行${NC}"
 echo -e "  ✔ IP转发功能:  ${GREEN}已全自动开启 (IPv4/IPv6 Forwarding & rp_filter=0)${NC}"
