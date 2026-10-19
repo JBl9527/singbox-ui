@@ -131,6 +131,27 @@ def _get_gateway_ifaces():
     return sorted(ifaces)
 
 
+def verify_gateway_diversion(max_wait: int = 5) -> bool:
+    """
+    自检旁路由分流链路: table 2022 是否存在指向 tun0 的默认路由。
+    sing-box TUN auto_route 启动成功后会自动写入该路由; 若缺失, 说明 TUN 未生效,
+    局域网转发流量会走 main 表直连、完全绕过 sing-box 内核分流。
+    返回 True 表示分流链路就绪。
+    """
+    if os.name == "nt" or not shutil.which("ip"):
+        return True
+    for _ in range(max_wait):
+        try:
+            res = subprocess.run(["ip", "route", "show", "table", "2022"],
+                                 capture_output=True, text=True, timeout=3)
+            if "dev tun0" in res.stdout:
+                return True
+        except Exception:
+            pass
+        time.sleep(1)
+    return False
+
+
 def setup_gateway_network():
     """
     自动配置 Linux 单臂旁路由 / 透明网关底层内核参数与防火墙转发规则
@@ -2048,6 +2069,12 @@ class SingBoxManager:
         time.sleep(0.45)
         if self.process.poll() is None:
             setup_gateway_network()
+            if verify_gateway_diversion():
+                append_log("旁路由分流链路自检通过: table 2022 默认路由已指向 tun0")
+            else:
+                append_log("警告: table 2022 中没有 tun0 默认路由, 旁路由分流未生效! "
+                           "请检查: 1) sing-box 日志中 TUN 是否启动成功 "
+                           "2) /dev/net/tun 是否可用 3) config.json 是否包含 tun-in")
             return True
         return False
 
