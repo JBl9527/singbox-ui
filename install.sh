@@ -401,6 +401,8 @@ elif command -v firewall-cmd &> /dev/null && systemctl is-active firewalld &> /d
 fi
 
 # iptables 底层转发、NAT MASQUERADE 与策略路由注入 (保障旁路由网关模式下局域网其他设备能够顺利转发)
+# 注意: 以下 ip rule / iptables 规则均为内存状态, 重启即丢失; app.py 每次服务启动时会自动全量恢复,
+# 这里仅保证"安装当时"立即生效。
 iptables -P FORWARD ACCEPT 2>/dev/null || true
 iptables -I FORWARD -j ACCEPT 2>/dev/null || true
 iptables -I FORWARD -i tun0 -j ACCEPT 2>/dev/null || true
@@ -410,13 +412,33 @@ if iptables -L DOCKER-USER >/dev/null 2>&1; then
     iptables -I DOCKER-USER -o tun0 -j ACCEPT 2>/dev/null || true
     iptables -I DOCKER-USER -j ACCEPT 2>/dev/null || true
 fi
-PHYS_DEV=$(ip route show default 2>/dev/null | awk '/dev/ {for(i=1;i<=NF;i++) if($i=="dev" && $(i+1)!="tun0") print $(i+1)}' | head -n 1)
+# 收集所有配置了私有 IPv4 的局域网物理网卡 (多网卡全覆盖, 排除 lo/tun0/虚拟网卡)
+LAN_IFACES=""
+while IFS= read -r line; do
+    IFNAME=$(echo "$line" | awk -F': ' '{print $2}' | awk '{print $1}')
+    IPADDR=$(echo "$line" | grep -oP 'inet \K[0-9.]+' | head -n 1)
+    case "$IFNAME" in
+        lo|tun0|docker*|veth*|br-*|virbr*|tun*) continue ;;
+    esac
+    case "$IPADDR" in
+        10.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*|192.168.*) LAN_IFACES="$LAN_IFACES $IFNAME" ;;
+    esac
+done < <(ip -4 -o addr show 2>/dev/null)
+# 兜底: 未扫到私有地址网卡时回退到默认路由出接口
+if [ -z "$LAN_IFACES" ]; then
+    LAN_IFACES=$(ip route show default 2>/dev/null | awk '/dev/ {for(i=1;i<=NF;i++) if($i=="dev" && $(i+1)!="tun0") print $(i+1)}' | head -n 1)
+fi
+PHYS_DEV=$(echo "$LAN_IFACES" | awk '{print $1}')
 if [ -n "$PHYS_DEV" ]; then
     iptables -t nat -C POSTROUTING -o "$PHYS_DEV" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o "$PHYS_DEV" -j MASQUERADE 2>/dev/null || true
-    # 策略路由: 确保来自物理网卡的局域网入站转发流量送入 table 2022 (tun0)
-    ip rule del iif "$PHYS_DEV" table 2022 2>/dev/null || true
-    ip rule add iif "$PHYS_DEV" table 2022 pref 15000 2>/dev/null || true
 fi
+# 策略路由 (分流核心): 确保来自局域网网卡的入站转发流量送入 table 2022 (tun0 -> sing-box 内核)
+# 缺了这条规则, 转发流量走 main 表直连出公网, 完全绕过 sing-box 分流
+for IFACE in $LAN_IFACES; do
+    [ -z "$IFACE" ] && continue
+    ip -4 rule del iif "$IFACE" table 2022 2>/dev/null || true
+    ip -4 rule add iif "$IFACE" table 2022 pref 15000 2>/dev/null || true
+done
 # 强制将所有 53 端口 DNS 请求重定向至本地 53 端口 (sing-box 0.0.0.0:53 dns-in 内核 hijack-dns)
 iptables -t nat -C PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || iptables -t nat -I PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || true
 iptables -t nat -C PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || iptables -t nat -I PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || true
