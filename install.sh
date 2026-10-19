@@ -149,6 +149,10 @@ else
     if [ -d "/etc/modules-load.d" ]; then
         echo "tun" > /etc/modules-load.d/singbox-tun.conf
     fi
+    # DNS 劫持依赖 NAT/REDIRECT 内核模块, 缺失时 iptables 静默加不上规则; 尽力加载
+    for _mod in xt_REDIRECT nf_nat iptable_nat nf_conntrack; do
+        modprobe "$_mod" 2>/dev/null || true
+    done
     if [ -f "/etc/modules" ] && ! grep -q "^tun$" /etc/modules 2>/dev/null; then
         echo "tun" >> /etc/modules
     fi
