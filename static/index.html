@@ -295,7 +295,9 @@
           <textarea id="geKeywords" rows="2" class="w-full mb-3 px-3 py-2 text-sm bg-gray-800 border border-gray-700 rounded-lg text-white" placeholder="如 bybit"></textarea>
           <label class="block text-xs text-gray-400 mb-1">IP 段 CIDR（每行一个）</label>
           <textarea id="geCidr" rows="2" class="w-full mb-3 px-3 py-2 text-sm bg-gray-800 border border-gray-700 rounded-lg text-white" placeholder="如 1.2.3.0/24"></textarea>
-          <label class="block text-xs text-gray-400 mb-1">📦 内置规则集（勾选即用，新手直接选这里）</label>
+          <label class="block text-xs text-gray-400 mb-1">📦 内置规则集（勾选即用，共1523个，可搜索）</label>
+          <input id="geBuiltinSearch" oninput="searchBuiltin(this.value)" placeholder="搜索规则集，如 youtube / binance / steam …"
+                 class="w-full mb-2 px-3 py-2 text-sm bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500">
           <div id="geBuiltin" class="mb-3 p-3 bg-gray-800/60 border border-gray-700 rounded-lg max-h-44 overflow-y-auto text-xs"></div>
           <label class="block text-xs text-gray-400 mb-1">规则集链接（.srs，每行一个，自动下载；也支持简写如 geosite:binance / geoip:us）</label>
           <textarea id="geRuleset" rows="2" class="w-full mb-4 px-3 py-2 text-sm bg-gray-800 border border-gray-700 rounded-lg text-white" placeholder="https://.../geosite-google.srs"></textarea>
@@ -361,11 +363,14 @@
       document.getElementById('geKeywords').value = g ? (g.keywords||[]).join('\n') : '';
       document.getElementById('geCidr').value = g ? (g.ip_cidr||[]).join('\n') : '';
       document.getElementById('geRuleset').value = g ? (g.ruleset_urls||[]).join('\n') : '';
-      loadBuiltinRulesets().then(() => renderBuiltinChecks(g ? g.ruleset_urls : []));
+      _selectedRs = new Set((g && g.ruleset_urls || []).map(s => s.trim().toLowerCase()));
+      loadBuiltinRulesets().then(() => renderBuiltinChecks());
       document.getElementById('groupEditor').classList.remove('hidden');
     }
     function closeGroupEditor() { document.getElementById('groupEditor').classList.add('hidden'); }
     let _builtinRulesets = [];
+    let _fullRulesets = null;
+    let _selectedRs = new Set();
     async function loadBuiltinRulesets() {
       if (_builtinRulesets.length) return;
       try {
@@ -374,26 +379,47 @@
         _builtinRulesets = j.rulesets || [];
       } catch(e) { _builtinRulesets = []; }
     }
-    function renderBuiltinChecks(selected) {
-      const sel = new Set((selected||[]).map(s => s.trim().toLowerCase()));
+    async function loadFullRulesets() {
+      if (_fullRulesets) return;
+      try {
+        const r = await fetch('/rulesets_full.json');
+        _fullRulesets = await r.json();
+      } catch(e) { _fullRulesets = []; }
+    }
+    function _rsCheckbox(rs) {
+      const checked = _selectedRs.has(rs.id.toLowerCase()) ? 'checked' : '';
+      return `<label class="inline-flex items-center gap-1 text-gray-300 cursor-pointer hover:text-white"><input type="checkbox" data-rsid="${rs.id}" ${checked} onchange="toggleRs(this)" class="accent-indigo-500">${rs.label}</label>`;
+    }
+    function toggleRs(el) {
+      const id = el.dataset.rsid.toLowerCase();
+      if (el.checked) _selectedRs.add(id); else _selectedRs.delete(id);
+    }
+    function renderBuiltinChecks() {
       const box = document.getElementById('geBuiltin');
+      document.getElementById('geBuiltinSearch').value = '';
       if (!_builtinRulesets.length) { box.innerHTML = '<span class="text-gray-500">加载失败，可手动填链接</span>'; return; }
       const cats = {};
       _builtinRulesets.forEach(rs => { (cats[rs.category] = cats[rs.category]||[]).push(rs); });
       let html = '';
       for (const [cat, items] of Object.entries(cats)) {
         html += `<div class="mb-2"><div class="text-indigo-300 font-medium mb-1">${cat}</div><div class="flex flex-wrap gap-x-3 gap-y-1">`;
-        items.forEach(rs => {
-          const checked = sel.has(rs.id.toLowerCase()) ? 'checked' : '';
-          html += `<label class="inline-flex items-center gap-1 text-gray-300 cursor-pointer hover:text-white"><input type="checkbox" data-rsid="${rs.id}" ${checked} class="accent-indigo-500">${rs.label}</label>`;
-        });
+        items.forEach(rs => { html += _rsCheckbox(rs); });
         html += '</div></div>';
       }
       box.innerHTML = html;
     }
-    function checkedBuiltin() {
-      return [...document.querySelectorAll('#geBuiltin input[type=checkbox]:checked')].map(c => c.dataset.rsid);
+    async function searchBuiltin(q) {
+      q = (q||'').trim().toLowerCase();
+      const box = document.getElementById('geBuiltin');
+      if (!q) { renderBuiltinChecks(); return; }
+      await loadFullRulesets();
+      const hits = (_fullRulesets||[]).filter(rs =>
+        rs.id.toLowerCase().includes(q) || rs.label.toLowerCase().includes(q)).slice(0, 120);
+      if (!hits.length) { box.innerHTML = '<span class="text-gray-500">无匹配，可手动填链接</span>'; return; }
+      box.innerHTML = `<div class="mb-1 text-gray-500">找到 ${hits.length} 个（最多显示120）</div><div class="flex flex-wrap gap-x-3 gap-y-1">` +
+        hits.map(_rsCheckbox).join('') + '</div>';
     }
+    function checkedBuiltin() { return [..._selectedRs]; }
     function lines(id){ return document.getElementById(id).value.split('\n').map(s=>s.trim()).filter(Boolean); }
     async function saveGroup() {
       const gid = document.getElementById('geId').value;
