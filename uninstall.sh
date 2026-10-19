@@ -53,7 +53,7 @@ pkill -9 -f "app.py --port" 2>/dev/null || true
 echo -e "${GREEN}✔ 服务与相关后台进程已全部终止并注销${NC}"
 
 # 2. 清理防火墙端口规则
-echo -e "\n${BLUE}[2/4] 清理防火墙端口规则 (${PORT} / 2080)...${NC}"
+echo -e "\n${BLUE}[2/4] 清理防火墙端口规则 (${PORT} / 2080) 与旁路由策略路由...${NC}"
 if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
     ufw delete allow ${PORT}/tcp >/dev/null 2>&1 || true
     ufw delete allow 2080/tcp >/dev/null 2>&1 || true
@@ -65,6 +65,23 @@ elif command -v firewall-cmd &> /dev/null && systemctl is-active firewalld &> /d
     echo -e "${GREEN}✔ Firewalld 防火墙端口规则已移除${NC}"
 else
     echo -e "${YELLOW}未检测到活动防火墙，跳过${NC}"
+fi
+
+# 清理旁路由透明网关残留: 策略路由 (iif -> table 2022) 与 DNS 劫持重定向规则
+if command -v ip &> /dev/null; then
+    while IFS= read -r iface; do
+        [ -z "$iface" ] && continue
+        case "$iface" in
+            lo|tun0|docker*|veth*|br-*|virbr*|tun*) continue ;;
+        esac
+        ip -4 rule del iif "$iface" table 2022 2>/dev/null || true
+    done < <(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | awk '{print $1}')
+    echo -e "${GREEN}✔ 旁路由策略路由规则 (table 2022) 已清理${NC}"
+fi
+if command -v iptables &> /dev/null; then
+    iptables -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || true
+    iptables -t nat -D PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || true
+    echo -e "${GREEN}✔ DNS 劫持重定向规则已清理${NC}"
 fi
 
 # 3. 删除文件与安装目录
