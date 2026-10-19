@@ -253,6 +253,22 @@ if ! command -v python3 &> /dev/null || ! command -v curl &> /dev/null || ! comm
 fi
 echo -e "${GREEN}✔ 基础环境检查完毕: $(python3 --version)${NC}"
 
+# 旁路由转发依赖 iptables(DNS劫持/MASQUERADE/FORWARD), 缺失时静默跳过会导致分流不完整, 必须独立检查
+if ! command -v iptables &> /dev/null; then
+    echo -e "${YELLOW}未检测到 iptables, 正在安装 (旁路由 DNS 劫持与转发规则依赖它)...${NC}"
+    if command -v apt-get &> /dev/null; then
+        apt-get update -y && apt-get install -y iptables nftables iproute2 || true
+    elif command -v yum &> /dev/null; then
+        yum install -y iptables nftables iproute || true
+    elif command -v apk &> /dev/null; then
+        apk add --no-cache iptables nftables iproute2 || true
+    elif command -v pacman &> /dev/null; then
+        pacman -Sy --noconfirm iptables nftables iproute2 || true
+    fi
+fi
+command -v iptables &> /dev/null && echo -e "${GREEN}✔ iptables 就绪: $(iptables --version)${NC}" \
+    || echo -e "${RED}✘ iptables 仍不可用, DNS劫持/MASQUERADE 规则将无法配置${NC}"
+
 # 4. 识别芯片架构
 echo -e "\n${BLUE}[3/6] 检测 CPU 芯片架构...${NC}"
 ARCH=$(uname -m)
