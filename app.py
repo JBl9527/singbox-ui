@@ -2158,7 +2158,9 @@ class SingBoxManager:
                 json.dump(preset_data, f, indent=2, ensure_ascii=False)
 
         setup_gateway_network()
-        clear_stale_cache_files()
+        # Preserve cached FakeIP mappings and selected proxy groups on an
+        # ordinary service restart. Cache clearing is reserved for explicit
+        # subscription rebuilds and cache-reset actions.
         sanitize_config_file(CONFIG_PATH)
 
         try:
