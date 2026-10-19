@@ -1994,6 +1994,7 @@ BUILTIN_RULESETS = [
     {"id": "geosite:discord", "label": "Discord", "category": "社交"},
     {"id": "geosite:github", "label": "GitHub", "category": "开发"},
     {"id": "geosite:binance", "label": "Binance", "category": "Crypto"},
+    {"id": "geosite:bybit", "label": "Bybit", "category": "Crypto"},
     {"id": "geosite:apple", "label": "Apple", "category": "其他"},
     {"id": "geosite:microsoft", "label": "Microsoft", "category": "其他"},
     {"id": "geosite:amazon", "label": "Amazon", "category": "其他"},
