@@ -1950,8 +1950,23 @@ def _v2_selector(tag, members, default=None):
         ob["default"] = valid[0]
     return ob
 
+def _expand_ruleset_shorthand(url):
+    """展开规则集简写: geosite:binance / geoip:us -> 完整 SRS 地址 (走 ghfast 镜像)"""
+    u = url.strip()
+    low = u.lower()
+    if low.startswith("geosite:") and "://" not in u:
+        name = u.split(":", 1)[1].strip().lower()
+        if name:
+            return f"https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-{name}.srs"
+    elif low.startswith("geoip:") and "://" not in u:
+        name = u.split(":", 1)[1].strip().lower()
+        if name:
+            return f"https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-{name}.srs"
+    return u
+
 def _ensure_user_ruleset(url):
     """下载用户规则集(srs)到 data/rulesets/, 返回 rule_set tag; 失败返回 None"""
+    url = _expand_ruleset_shorthand(url)
     import hashlib
     try:
         d = hashlib.md5(url.encode()).hexdigest()[:12]
