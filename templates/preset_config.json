@@ -698,7 +698,8 @@
           "paypal.com",
           "binance.com",
           "okx.com",
-          "bybit.com"
+          "bybit.com",
+          "bybit.biz"
         ],
         "outbound": "Wallet"
       },
