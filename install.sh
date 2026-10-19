@@ -242,13 +242,17 @@ echo -e "\n${BLUE}[2/6] 检查运行环境与基础组件 (含 iptables / nftabl
 if ! command -v python3 &> /dev/null || ! command -v curl &> /dev/null || ! command -v tar &> /dev/null || ! command -v ip &> /dev/null; then
     echo -e "${YELLOW}正在安装必要运行组件与底层网络工具...${NC}"
     if command -v apt-get &> /dev/null; then
-        apt-get update -y && apt-get install -y python3 curl tar ca-certificates iptables nftables iproute2
+        apt-get update -y && apt-get install -y python3 curl tar ca-certificates iptables nftables iproute2 unzip
+    elif command -v dnf &> /dev/null; then
+        dnf install -y python3 curl tar ca-certificates iptables nftables iproute unzip
     elif command -v yum &> /dev/null; then
-        yum install -y python3 curl tar ca-certificates iptables nftables iproute
+        yum install -y python3 curl tar ca-certificates iptables nftables iproute unzip
+    elif command -v zypper &> /dev/null; then
+        zypper install -y python3 curl tar ca-certificates iptables nftables iproute2 unzip
     elif command -v apk &> /dev/null; then
-        apk add --no-cache python3 curl tar ca-certificates iptables nftables iproute2
+        apk add --no-cache python3 curl tar ca-certificates iptables nftables iproute2 unzip
     elif command -v pacman &> /dev/null; then
-        pacman -Sy --noconfirm python tar curl ca-certificates iptables nftables iproute2
+        pacman -Sy --noconfirm python tar curl ca-certificates iptables nftables iproute2 unzip
     fi
 fi
 echo -e "${GREEN}✔ 基础环境检查完毕: $(python3 --version)${NC}"
@@ -258,8 +262,12 @@ if ! command -v iptables &> /dev/null; then
     echo -e "${YELLOW}未检测到 iptables, 正在安装 (旁路由 DNS 劫持与转发规则依赖它)...${NC}"
     if command -v apt-get &> /dev/null; then
         apt-get update -y && apt-get install -y iptables nftables iproute2 || true
+    elif command -v dnf &> /dev/null; then
+        dnf install -y iptables nftables iproute || true
     elif command -v yum &> /dev/null; then
         yum install -y iptables nftables iproute || true
+    elif command -v zypper &> /dev/null; then
+        zypper install -y iptables nftables iproute2 || true
     elif command -v apk &> /dev/null; then
         apk add --no-cache iptables nftables iproute2 || true
     elif command -v pacman &> /dev/null; then
@@ -317,7 +325,7 @@ else
     smart_download "${GITHUB_RAW_BASE}/app.py" "$INSTALL_DIR/app.py"
     smart_download "${GITHUB_RAW_BASE}/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
     smart_download "${GITHUB_RAW_BASE}/static/index.html" "$INSTALL_DIR/static/index.html"
-    smart_download "${GITHUB_RAW_BASE}/templates/preset_config.json" "$INSTALL_DIR/templates/preset_config.json"
+
 fi
 
 chmod +x "$INSTALL_DIR/app.py" 2>/dev/null || true
@@ -359,46 +367,38 @@ if [ "$NEED_DOWNLOAD" = true ]; then
     fi
 fi
 
-# 初始化或重构配置文件
-# 若已有 subscriptions.json 订阅记录，则保留订阅地址并清理旧版 config.json，服务启动时将自动以最新标准规则纯净重构
-if [ -f "$INSTALL_DIR/data/subscriptions.json" ]; then
-    echo -e "${GREEN}✔ 检测到已保存的订阅地址，将保留订阅并清除上一版本历史节点残留...${NC}"
-    rm -f "$INSTALL_DIR/data/config.json" 2>/dev/null || true
-fi
-
-# 检查当前现有 config.json 是否损坏（如缺失 tun0 网卡），若是则立即从 templates/preset_config.json 纯净重构
+# v2 数据目录: 程序与数据分离, 升级永不删除 data/ (订阅/分组/选择全部保留)
+mkdir -p "$INSTALL_DIR/data/rulesets"
+# 旧版 config.json 若缺失 tun0 (v1 残留), 删除后由 app.py 启动时按 v2 最小化模型重建
 if [ -f "$INSTALL_DIR/data/config.json" ]; then
     if ! grep -q '"interface_name": *"tun0"' "$INSTALL_DIR/data/config.json" 2>/dev/null; then
-        echo -e "${YELLOW}检测到现有 config.json 缺失 tun0 网卡配置，正在从预设模板自动重构修复...${NC}"
-        cp "$INSTALL_DIR/templates/preset_config.json" "$INSTALL_DIR/data/config.json"
+        echo -e "${YELLOW}检测到旧版 config.json 缺失 tun0, 将由 app.py 按 v2 模型重建...${NC}"
+        rm -f "$INSTALL_DIR/data/config.json" 2>/dev/null || true
     fi
 fi
+echo -e "${GREEN}✔ 数据目录就绪: $INSTALL_DIR/data (升级保留)${NC}"
 
-# 若无配置文件则使用开箱预设模板初始化
-if [ ! -f "$INSTALL_DIR/data/config.json" ] && [ -f "$INSTALL_DIR/templates/preset_config.json" ]; then
-    cp "$INSTALL_DIR/templates/preset_config.json" "$INSTALL_DIR/data/config.json"
-fi
-
-# 7. 部署 MetaCubeX Dashboard (Metacubexd) 监控仪表盘
-if [ ! -f "$INSTALL_DIR/static/ui/index.html" ] || grep -q "zashboard" "$INSTALL_DIR/static/ui/index.html" 2>/dev/null; then
-    echo -e "\n${BLUE}正在部署 MetaCubeX Dashboard (Metacubexd) 监控仪表盘...${NC}"
+# 7. 部署 Zashboard 节点管理面板 (v2)
+ZB_VERSION="v3.29.1"
+if [ ! -f "$INSTALL_DIR/static/ui/index.html" ] || ! grep -q "zashboard\|Zashboard" "$INSTALL_DIR/static/ui/index.html" 2>/dev/null; then
+    echo -e "\n${BLUE}正在部署 Zashboard 节点管理面板 (${ZB_VERSION})...${NC}"
     mkdir -p "$INSTALL_DIR/static/ui"
-    TMP_META="/tmp/metacubexd.tgz"
-    if smart_download "https://github.com/MetaCubeX/metacubexd/releases/latest/download/compressed-dist.tgz" "$TMP_META"; then
+    TMP_ZB="/tmp/zashboard-dist.zip"
+    if smart_download "https://github.com/Zephyruso/zashboard/releases/download/${ZB_VERSION}/dist.zip" "$TMP_ZB"; then
         rm -rf "$INSTALL_DIR/static/ui/"* 2>/dev/null || true
-        tar -xzf "$TMP_META" -C "$INSTALL_DIR/static/ui" 2>/dev/null || true
-        rm -f "$TMP_META" 2>/dev/null || true
-        echo -e "${GREEN}✔ MetaCubeX Dashboard (Metacubexd) 部署完成！${NC}"
+        unzip -q -o "$TMP_ZB" -d /tmp/zashboard-dist 2>/dev/null || true
+        # dist.zip 内含 dist/ 目录
+        if [ -d "/tmp/zashboard-dist/dist" ]; then
+            cp -r /tmp/zashboard-dist/dist/* "$INSTALL_DIR/static/ui/"
+        else
+            cp -r /tmp/zashboard-dist/* "$INSTALL_DIR/static/ui/" 2>/dev/null || true
+        fi
+        rm -rf "$TMP_ZB" /tmp/zashboard-dist 2>/dev/null || true
+        echo -e "${GREEN}✔ Zashboard 节点管理面板部署完成！${NC}"
+    else
+        echo -e "${YELLOW}⚠ Zashboard 下载失败, 可稍后手动部署到 static/ui/${NC}"
     fi
 fi
-
-# 确保 config.js 具有自适应当前主机的 defaultBackendURL
-cat << 'EOF' > "$INSTALL_DIR/static/ui/config.js"
-window.__METACUBEXD_CONFIG__ = {
-  defaultBackendURL: (typeof window !== 'undefined' && window.location) ? ((window.location.protocol === 'https:' ? 'https://' : 'http://') + (window.location.hostname || '127.0.0.1') + ':9090') : 'http://127.0.0.1:9090',
-  githubToken: '',
-};
-EOF
 
 ln -sfn "$INSTALL_DIR/static/ui" "$INSTALL_DIR/ui" 2>/dev/null || true
 
