@@ -277,6 +277,26 @@ fi
 command -v iptables &> /dev/null && echo -e "${GREEN}✔ iptables 就绪: $(iptables --version)${NC}" \
     || echo -e "${RED}✘ iptables 仍不可用, DNS劫持/MASQUERADE 规则将无法配置${NC}"
 
+# Zashboard 面板部署依赖 unzip 解压 dist.zip, 必须独立检查 (主依赖块只在 python3/curl/tar/ip 缺失时才触发, 会漏掉它)
+if ! command -v unzip &> /dev/null; then
+    echo -e "${YELLOW}未检测到 unzip, 正在安装 (Zashboard 节点面板解压依赖它)...${NC}"
+    if command -v apt-get &> /dev/null; then
+        apt-get update -y && apt-get install -y unzip || true
+    elif command -v dnf &> /dev/null; then
+        dnf install -y unzip || true
+    elif command -v yum &> /dev/null; then
+        yum install -y unzip || true
+    elif command -v zypper &> /dev/null; then
+        zypper install -y unzip || true
+    elif command -v apk &> /dev/null; then
+        apk add --no-cache unzip || true
+    elif command -v pacman &> /dev/null; then
+        pacman -Sy --noconfirm unzip || true
+    fi
+fi
+command -v unzip &> /dev/null && echo -e "${GREEN}✔ unzip 就绪${NC}" \
+    || echo -e "${RED}✘ unzip 仍不可用, Zashboard 节点面板将无法解压部署${NC}"
+
 # 4. 识别芯片架构
 echo -e "\n${BLUE}[3/6] 检测 CPU 芯片架构...${NC}"
 ARCH=$(uname -m)
@@ -389,17 +409,27 @@ if [ ! -f "$INSTALL_DIR/static/ui/index.html" ] || ! grep -q "zashboard\|Zashboa
     TMP_ZB="/tmp/zashboard-dist.zip"
     if smart_download "https://github.com/Zephyruso/zashboard/releases/download/${ZB_VERSION}/dist.zip" "$TMP_ZB"; then
         rm -rf "$INSTALL_DIR/static/ui/"* 2>/dev/null || true
-        unzip -q -o "$TMP_ZB" -d /tmp/zashboard-dist 2>/dev/null || true
-        # dist.zip 内含 dist/ 目录
-        if [ -d "/tmp/zashboard-dist/dist" ]; then
-            cp -r /tmp/zashboard-dist/dist/* "$INSTALL_DIR/static/ui/"
+        rm -rf /tmp/zashboard-dist
+        # 解压失败必须报错: 之前 2>/dev/null 把 unzip 缺失/损坏的报错吞掉, 还假报部署成功
+        if ! unzip -q -o "$TMP_ZB" -d /tmp/zashboard-dist; then
+            echo -e "${RED}✘ Zashboard 解压失败 (unzip 异常或压缩包损坏), 节点面板未部署${NC}"
         else
-            cp -r /tmp/zashboard-dist/* "$INSTALL_DIR/static/ui/" 2>/dev/null || true
+            # dist.zip 内含 dist/ 目录
+            if [ -d "/tmp/zashboard-dist/dist" ]; then
+                cp -r /tmp/zashboard-dist/dist/* "$INSTALL_DIR/static/ui/"
+            else
+                cp -r /tmp/zashboard-dist/* "$INSTALL_DIR/static/ui/"
+            fi
         fi
         rm -rf "$TMP_ZB" /tmp/zashboard-dist 2>/dev/null || true
-        echo -e "${GREEN}✔ Zashboard 节点管理面板部署完成！${NC}"
+        # 以 index.html 实际存在为准, 不许假报成功
+        if [ -f "$INSTALL_DIR/static/ui/index.html" ]; then
+            echo -e "${GREEN}✔ Zashboard 节点管理面板部署完成！${NC}"
+        else
+            echo -e "${RED}✘ Zashboard 部署失败: static/ui/index.html 不存在, 节点面板 (/ui/) 不可用, 请检查 unzip 与网络后重跑安装${NC}"
+        fi
     else
-        echo -e "${YELLOW}⚠ Zashboard 下载失败, 可稍后手动部署到 static/ui/${NC}"
+        echo -e "${RED}✘ Zashboard 下载失败 (所有镜像均不可达), 节点面板 (/ui/) 不可用, 请检查网络后重跑安装${NC}"
     fi
 fi
 
