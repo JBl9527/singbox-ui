@@ -2126,7 +2126,9 @@ def build_config_with_preset(valid_external_nodes: list):
                 or name in region_auto_tags or name in region_manual_tags:
             continue
         diy_names.append(name)
-        outbounds.append(_v2_selector(name, diy_members, selections.get(name, "默认代理")))
+        # mode=direct 的自定义直连分组不建 selector, 规则直接指向"直连"出站
+        if g.get("mode") != "direct":
+            outbounds.append(_v2_selector(name, diy_members, selections.get(name, "默认代理")))
     outbounds.append(_v2_selector("漏网之鱼", ["默认代理", "直连"],
                                   selections.get("漏网之鱼", "默认代理")))
     cfg["outbounds"] = outbounds
@@ -2141,14 +2143,15 @@ def build_config_with_preset(valid_external_nodes: list):
         name = str(g.get("name", "")).strip()
         if name not in diy_names:
             continue
+        target = "直连" if g.get("mode") == "direct" else name
         if g.get("domains"):
-            rules.append({"domain": list(dict.fromkeys(g["domains"])), "outbound": name})
+            rules.append({"domain": list(dict.fromkeys(g["domains"])), "outbound": target})
         if g.get("domain_suffix"):
-            rules.append({"domain_suffix": list(dict.fromkeys(g["domain_suffix"])), "outbound": name})
+            rules.append({"domain_suffix": list(dict.fromkeys(g["domain_suffix"])), "outbound": target})
         if g.get("keywords"):
-            rules.append({"domain_keyword": list(dict.fromkeys(g["keywords"])), "outbound": name})
+            rules.append({"domain_keyword": list(dict.fromkeys(g["keywords"])), "outbound": target})
         if g.get("ip_cidr"):
-            rules.append({"ip_cidr": list(dict.fromkeys(g["ip_cidr"])), "outbound": name})
+            rules.append({"ip_cidr": list(dict.fromkeys(g["ip_cidr"])), "outbound": target})
         for url in g.get("ruleset_urls", []) or []:
             tag, fmt = _ensure_user_ruleset(str(url).strip())
             if tag:
@@ -2158,7 +2161,7 @@ def build_config_with_preset(valid_external_nodes: list):
                     ext = "json" if fmt == "source" else "srs"
                     rs_list.append({"tag": tag, "type": "local", "format": fmt,
                                     "path": os.path.join(DATA_DIR, "rulesets", f"{tag}.{ext}")})
-                rules.append({"rule_set": [tag], "outbound": name})
+                rules.append({"rule_set": [tag], "outbound": target})
     rules.append({"domain_suffix": CN_DOMAIN_SUFFIXES, "outbound": "直连"})
     rules.append({"rule_set": ["geosite-cn", "geoip-cn"], "outbound": "直连"})
     if settings.get("quic_block", True):
@@ -2756,6 +2759,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     return
                 g = {
                     "id": new_group_id(), "name": name, "order": len(groups),
+                    "mode": "direct" if data.get("mode") == "direct" else "proxy",
                     "domains": [s.strip() for s in data.get("domains", []) if str(s).strip()],
                     "domain_suffix": [s.strip() for s in data.get("domain_suffix", []) if str(s).strip()],
                     "keywords": [s.strip() for s in data.get("keywords", []) if str(s).strip()],
@@ -2793,6 +2797,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 for k in ("domains", "domain_suffix", "keywords", "ip_cidr", "ruleset_urls"):
                     if k in data:
                         g[k] = [str(s).strip() for s in data[k] if str(s).strip()]
+                if "mode" in data:
+                    g["mode"] = "direct" if data["mode"] == "direct" else "proxy"
                 if data.get("name"):
                     g["name"] = str(data["name"]).strip()
                 save_groups(groups)
