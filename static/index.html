@@ -286,7 +286,12 @@
           <h3 id="groupEditorTitle" class="text-sm font-semibold text-white mb-4">新建分组</h3>
           <input type="hidden" id="geId">
           <label class="block text-xs text-gray-400 mb-1">分组名称 *</label>
-          <input id="geName" class="w-full mb-3 px-3 py-2 text-sm bg-gray-800 border border-gray-700 rounded-lg text-white" placeholder="如 AI、YouTube、Wallet">
+          <input id="geName" class="w-full mb-3 px-3 py-2 text-sm bg-gray-800 border border-gray-700 rounded-lg text-white" placeholder="如 AI、YouTube、Wallet、自定义直连">
+          <label class="block text-xs text-gray-400 mb-1">流量走向</label>
+          <select id="geMode" class="w-full mb-3 px-3 py-2 text-sm bg-gray-800 border border-gray-700 rounded-lg text-white">
+            <option value="proxy">走代理（生成策略组，在节点面板里选节点）</option>
+            <option value="direct">直连（命中的域名/IP 不走代理，如内网、国内自建服务）</option>
+          </select>
           <label class="block text-xs text-gray-400 mb-1">完整域名（每行一个，精确匹配）</label>
           <textarea id="geDomains" rows="2" class="w-full mb-3 px-3 py-2 text-sm bg-gray-800 border border-gray-700 rounded-lg text-white" placeholder="如 api.openai.com"></textarea>
           <label class="block text-xs text-gray-400 mb-1">域名后缀（每行一个，匹配子域名）</label>
@@ -337,7 +342,7 @@
           <div class="flex items-center gap-3 min-w-0">
             <span class="text-xs text-gray-500 font-mono w-6">${i+1}</span>
             <div class="min-w-0">
-              <div class="text-sm font-medium text-white truncate">${escHtml(g.name)}</div>
+              <div class="text-sm font-medium text-white truncate">${escHtml(g.name)}${g.mode==='direct' ? ' <span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 align-middle">直连</span>' : ''}</div>
               <div class="text-[11px] text-gray-400 truncate">${condSummary(g)}</div>
             </div>
           </div>
@@ -358,6 +363,7 @@
       document.getElementById('groupEditorTitle').innerText = g ? `编辑分组：${g.name}` : '新建分组';
       document.getElementById('geName').value = g ? g.name : '';
       document.getElementById('geName').disabled = !!g;
+      document.getElementById('geMode').value = (g && g.mode === 'direct') ? 'direct' : 'proxy';
       document.getElementById('geDomains').value = g ? (g.domains||[]).join('\n') : '';
       document.getElementById('geSuffix').value = g ? (g.domain_suffix||[]).join('\n') : '';
       document.getElementById('geKeywords').value = g ? (g.keywords||[]).join('\n') : '';
@@ -425,6 +431,7 @@
       const gid = document.getElementById('geId').value;
       const body = {
         name: document.getElementById('geName').value.trim(),
+        mode: document.getElementById('geMode').value,
         domains: lines('geDomains'), domain_suffix: lines('geSuffix'),
         keywords: lines('geKeywords'), ip_cidr: lines('geCidr'),
         ruleset_urls: [...new Set([...checkedBuiltin(), ...lines('geRuleset')])],
