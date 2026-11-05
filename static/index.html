@@ -39,7 +39,7 @@
   <div id="loginOverlay" style="display:none; position:fixed; inset:0; z-index:9999; background:rgba(3,7,18,.94); align-items:center; justify-content:center;">
     <div style="background:#111827; border:1px solid #374151; border-radius:12px; padding:28px; width:330px; max-width:92vw; box-shadow:0 20px 50px rgba(0,0,0,.5);">
       <div style="font-size:18px; font-weight:600; margin-bottom:6px; color:#f3f4f6;">🔐 Sing-Box WebUI 登录</div>
-      <div style="font-size:12px; color:#9ca3af; margin-bottom:16px;">密码见服务器上的 <code>data/webui_password</code> 文件（安装完成时终端也会打印）</div>
+      <div style="font-size:12px; color:#9ca3af; margin-bottom:16px;">密码见服务器上的 <code>data/webui_password</code> 文件（安装完成时终端也会打印）<br>忘记密码：在服务器上运行 <code>python3 app.py --reset-password</code> 重置后重启服务</div>
       <input id="loginPw" type="password" placeholder="请输入登录密码" autocomplete="current-password"
         style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:8px; border:1px solid #374151; background:#0b1220; color:#f3f4f6; margin-bottom:10px;" />
       <div id="loginErr" style="color:#f87171; font-size:12px; min-height:16px; margin-bottom:8px;"></div>
@@ -193,6 +193,24 @@
           </button>
         </div>
         <div class="text-[11px] text-gray-500 text-center">UI 端口: 9622 | 混合代理: 2080 | API: 9090</div>
+      </div>
+    </div>
+
+    <!-- 系统自检与一键修复 -->
+    <div class="bg-gray-900 border border-gray-800/80 rounded-2xl p-4 shadow-sm">
+      <div class="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <div class="text-sm font-semibold text-gray-200">🩺 系统自检</div>
+          <div class="text-[11px] text-gray-500 mt-0.5">检查内核、TUN、策略路由、DNS 劫持与转发链路是否完整接管（旁路由流量不进内核，多半是其中一项在重启后丢了）</div>
+        </div>
+        <div class="flex items-center space-x-2">
+          <span id="selfcheckSummary" class="text-xs text-gray-400"></span>
+          <button onclick="repairAll()" id="repairAllBtn" class="hidden px-3 py-1.5 text-xs bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 rounded-xl transition cursor-pointer">一键修复全部</button>
+          <button onclick="runSelfcheck()" class="px-3.5 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl transition cursor-pointer font-semibold">运行自检</button>
+        </div>
+      </div>
+      <div id="selfcheckList" class="mt-3 space-y-1.5">
+        <div class="text-xs text-gray-500">尚未运行自检，点击「运行自检」开始检查。</div>
       </div>
     </div>
 
@@ -1014,6 +1032,49 @@
     // 兼容调用
     function importSubscription() {
       addNewSubscription();
+    }
+
+    // ===== 系统自检与一键修复 =====
+    const SC_ICON = { ok: '✅', warn: '⚠️', fail: '❌' };
+    function renderSelfcheck(d) {
+      const list = document.getElementById('selfcheckList');
+      const sum = document.getElementById('selfcheckSummary');
+      if (!list) return;
+      if (d.summary && sum) sum.textContent = `通过 ${d.summary.ok} · 警告 ${d.summary.warn} · 异常 ${d.summary.fail}`;
+      const hasFixable = (d.items || []).some(i => i.fixable && i.status !== 'ok');
+      const allBtn = document.getElementById('repairAllBtn');
+      if (allBtn) allBtn.classList.toggle('hidden', !hasFixable);
+      list.innerHTML = (d.items || []).map(i => `
+        <div class="flex items-center justify-between gap-2 bg-gray-950/40 border border-gray-800/60 rounded-lg px-3 py-2">
+          <div class="text-xs min-w-0"><span class="mr-1.5">${SC_ICON[i.status] || '•'}</span><span class="text-gray-200 font-medium">${i.name}</span><span class="text-gray-500 ml-2">${i.detail || ''}</span></div>
+          ${i.fixable && i.status !== 'ok' ? `<button onclick="repairItem('${i.id}')" class="shrink-0 px-2.5 py-1 text-[11px] bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 rounded-lg cursor-pointer">修复</button>` : ''}
+        </div>`).join('');
+    }
+    async function runSelfcheck() {
+      showToast('正在运行系统自检...');
+      try {
+        const r = await fetch('/api/system/selfcheck');
+        renderSelfcheck(await r.json());
+      } catch (e) { showToast('自检请求失败: ' + e, false); }
+    }
+    async function repairItem(id) {
+      showToast('正在修复...');
+      try {
+        const r = await fetch('/api/system/repair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+        const d = await r.json();
+        (d.repair_results || []).forEach(x => showToast(x.message, x.success));
+        renderSelfcheck(d);
+      } catch (e) { showToast('修复请求失败: ' + e, false); }
+    }
+    async function repairAll() {
+      if (!confirm('确认修复全部可修复项？（可能包含下载内核 / 重启内核等耗时操作）')) return;
+      showToast('正在批量修复，请稍候...');
+      try {
+        const r = await fetch('/api/system/repair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ all: true }) });
+        const d = await r.json();
+        (d.repair_results || []).forEach(x => showToast(x.message, x.success));
+        renderSelfcheck(d);
+      } catch (e) { showToast('修复请求失败: ' + e, false); }
     }
 
     async function installKernel() {
