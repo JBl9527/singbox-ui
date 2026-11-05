@@ -15,6 +15,17 @@ set -e
 PORT=9622
 INSTALL_DIR="/opt/singbox-ui"
 SINGBOX_VERSION="1.14.3"
+# sing-box v${SINGBOX_VERSION} 各架构官方安装包 sha256（引自 GitHub Release 资产官方摘要）；
+# 下载可走镜像加速，但安装前必须校验一致，否则拒绝安装。
+kernel_sha256_for() {
+    case "$1" in
+        amd64) echo "e2bdf179c15a3652955dc44867e33ca0965c9c9b91b34267dcc5a5d639a5feee" ;;
+        arm64) echo "29dae24d76bea3bc62d07dd3e60cfc12003de7debbd6b768df9be9c68360174e" ;;
+        armv7) echo "8e81ee6bc1db6fec6e0342360e1de7bfabecec8d2e9c480a3563d129f84fb034" ;;
+        386)   echo "92dad4663615d2cb30fb8feba48787e8529b1940004341712b0d0d4548cb42ff" ;;
+        *)     echo "" ;;
+    esac
+}
 GITHUB_REPO="JBl9527/singbox-ui"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/${GITHUB_REPO}/main"
 
@@ -376,15 +387,26 @@ if [ "$NEED_DOWNLOAD" = true ]; then
     echo -e "正在下载匹配芯片的最新内核..."
     TMP_TAR="/tmp/sing-box-${SB_ARCH}.tar.gz"
 
-    if smart_download "$ORIGINAL_RELEASE_URL" "$TMP_TAR"; then
-        tar -xzf "$TMP_TAR" -C /tmp/
-        EXT_BIN=$(find /tmp/ -type f -name "sing-box" | head -n 1)
-        if [ -n "$EXT_BIN" ] && [ -f "$EXT_BIN" ]; then
-            mv "$EXT_BIN" "$TARGET_BIN"
-            chmod +x "$TARGET_BIN"
+    EXPECTED_SHA="$(kernel_sha256_for "$SB_ARCH")"
+    if [ -z "$EXPECTED_SHA" ]; then
+        echo -e "${RED}✘ 无架构 ${SB_ARCH} 的官方 sha256 校验值，拒绝安装内核。${NC}"
+    elif smart_download "$ORIGINAL_RELEASE_URL" "$TMP_TAR"; then
+        ACTUAL_SHA="$(sha256sum "$TMP_TAR" 2>/dev/null | awk '{print $1}')"
+        if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo -e "${RED}✘ 内核完整性校验失败：sha256 不匹配（期望 ${EXPECTED_SHA:0:16}…，实际 ${ACTUAL_SHA:0:16}…）。${NC}"
+            echo -e "${RED}  已拒绝安装该安装包——可能被镜像源污染或下载损坏，请检查网络后重试。${NC}"
+            rm -f "$TMP_TAR"
+        else
+            echo -e "${GREEN}✔ 内核 sha256 完整性校验通过${NC}"
+            tar -xzf "$TMP_TAR" -C /tmp/
+            EXT_BIN=$(find /tmp/ -type f -name "sing-box" | head -n 1)
+            if [ -n "$EXT_BIN" ] && [ -f "$EXT_BIN" ]; then
+                mv "$EXT_BIN" "$TARGET_BIN"
+                chmod +x "$TARGET_BIN"
+            fi
+            rm -f "$TMP_TAR"
+            echo -e "${GREEN}✔ sing-box 最新内核部署成功: $($TARGET_BIN version | head -n 1)${NC}"
         fi
-        rm -f "$TMP_TAR"
-        echo -e "${GREEN}✔ sing-box 最新内核部署成功: $($TARGET_BIN version | head -n 1)${NC}"
     else
         echo -e "${YELLOW}⚠ 下载最新内核遇到网络波动，稍后可在 WebUI 页面点击【一键下载内核】${NC}"
     fi
@@ -538,6 +560,13 @@ echo -e "${GREEN}===============================================================
 echo -e "  ▶ 外网访问地址: ${CYAN}http://${PUBLIC_IP}:${PORT}${NC}"
 echo -e "  ▶ 内网访问地址: ${CYAN}http://${LOCAL_IP}:${PORT}${NC}"
 echo -e "  ▶ 本机回环地址: ${CYAN}http://127.0.0.1:${PORT}${NC}"
+WEBUI_PW=""
+if [ -f "$INSTALL_DIR/data/webui_password" ]; then WEBUI_PW=$(cat "$INSTALL_DIR/data/webui_password" 2>/dev/null); fi
+if [ -n "$WEBUI_PW" ]; then
+    echo -e "  ▶ WebUI 登录密码: ${CYAN}${WEBUI_PW}${NC}（保存在 $INSTALL_DIR/data/webui_password，可在面板中修改）"
+else
+    echo -e "  ▶ WebUI 登录密码: ${CYAN}见 $INSTALL_DIR/data/webui_password（服务首次启动时自动生成）${NC}"
+fi
 echo -e "  ✔ 系统环境:    ${PURPLE}${VIRT_DESC}${NC}"
 echo -e "  ✔ 内核状态:    ${GREEN}已随系统自启，内核正在运行${NC}"
 echo -e "  ✔ IP转发功能:  ${GREEN}已全自动开启 (IPv4/IPv6 Forwarding & rp_filter=0)${NC}"
