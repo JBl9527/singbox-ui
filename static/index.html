@@ -35,6 +35,76 @@
 </head>
 <body class="bg-gray-950 text-gray-100 min-h-screen flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
 
+  <!-- WebUI 登录层（鉴权）：未登录时覆盖全屏，登录成功后整页刷新 -->
+  <div id="loginOverlay" style="display:none; position:fixed; inset:0; z-index:9999; background:rgba(3,7,18,.94); align-items:center; justify-content:center;">
+    <div style="background:#111827; border:1px solid #374151; border-radius:12px; padding:28px; width:330px; max-width:92vw; box-shadow:0 20px 50px rgba(0,0,0,.5);">
+      <div style="font-size:18px; font-weight:600; margin-bottom:6px; color:#f3f4f6;">🔐 Sing-Box WebUI 登录</div>
+      <div style="font-size:12px; color:#9ca3af; margin-bottom:16px;">密码见服务器上的 <code>data/webui_password</code> 文件（安装完成时终端也会打印）</div>
+      <input id="loginPw" type="password" placeholder="请输入登录密码" autocomplete="current-password"
+        style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:8px; border:1px solid #374151; background:#0b1220; color:#f3f4f6; margin-bottom:10px;" />
+      <div id="loginErr" style="color:#f87171; font-size:12px; min-height:16px; margin-bottom:8px;"></div>
+      <button id="loginBtn" style="width:100%; padding:10px; border:none; border-radius:8px; background:#4f46e5; color:#fff; font-weight:600; cursor:pointer;">登录</button>
+    </div>
+  </div>
+  <script>
+    // ===== WebUI 登录鉴权：包装 fetch 拦截 401，弹出登录层 =====
+    (function () {
+      var origFetch = window.fetch;
+      function showLogin() {
+        var o = document.getElementById('loginOverlay');
+        if (o) { o.style.display = 'flex'; var i = document.getElementById('loginPw'); if (i) i.focus(); }
+      }
+      function hideLogin() {
+        var o = document.getElementById('loginOverlay');
+        if (o) o.style.display = 'none';
+      }
+      window.__showLogin = showLogin;
+      window.fetch = function (input, init) {
+        return origFetch.call(this, input, init).then(function (res) {
+          if (res.status === 401) showLogin();
+          return res;
+        });
+      };
+      function doLogin() {
+        var pw = document.getElementById('loginPw').value;
+        var err = document.getElementById('loginErr');
+        err.textContent = '';
+        origFetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: pw })
+        }).then(function (r) {
+          return r.json().then(function (d) { return { ok: r.ok, d: d }; });
+        }).then(function (x) {
+          if (x.ok && x.d.success) { hideLogin(); location.reload(); }
+          else { err.textContent = x.d.message || '登录失败'; }
+        }).catch(function (e) { err.textContent = '网络错误: ' + e; });
+      }
+      document.addEventListener('DOMContentLoaded', function () {
+        var btn = document.getElementById('loginBtn');
+        if (btn) btn.addEventListener('click', doLogin);
+        var inp = document.getElementById('loginPw');
+        if (inp) inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
+        origFetch('/api/auth/check').then(function (r) { return r.json(); }).then(function (d) {
+          if (!d.authed) { showLogin(); return; }
+          // 已登录时在顶栏加退出按钮
+          try {
+            var hdr = document.querySelector('header div');
+            if (hdr) {
+              var b = document.createElement('button');
+              b.textContent = '退出登录';
+              b.style.cssText = 'margin-left:12px; font-size:12px; color:#9ca3af; border:1px solid #374151; border-radius:6px; padding:4px 10px; background:transparent; cursor:pointer;';
+              b.addEventListener('click', function () {
+                origFetch('/api/logout', { method: 'POST' }).then(function () { location.reload(); });
+              });
+              hdr.appendChild(b);
+            }
+          } catch (e) { /* 顶栏结构变化时静默跳过 */ }
+        }).catch(function () { /* 状态检查失败不阻塞页面 */ });
+      });
+    })();
+  </script>
+
   <!-- 顶部导航 -->
   <header class="border-b border-gray-800 bg-gray-900/60 backdrop-blur sticky top-0 z-40">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
