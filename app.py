@@ -28,6 +28,9 @@ import struct
 import random
 import base64
 import shutil
+import hashlib
+import hmac
+import secrets
 import tarfile
 import ipaddress
 import traceback
@@ -54,6 +57,106 @@ os.makedirs(os.path.join(BASE_DIR, "templates"), exist_ok=True)
 
 # 内存日志缓冲队列（最多保存300条）
 LOG_BUFFER = deque(maxlen=300)
+
+# ================= WebUI 登录鉴权 =================
+# 密码保存在 data/webui_password（0600），首次启动自动生成随机密码；
+# 登录后下发内存会话 Cookie（7 天），/api/* 接口（除 /api/login 与 /api/auth/check）一律需鉴权。
+PASSWORD_PATH = os.path.join(DATA_DIR, "webui_password")
+SESSION_COOKIE = "sbui_session"
+SESSION_TTL = 7 * 24 * 3600
+_sessions = {}
+_sessions_lock = threading.Lock()
+_login_fails = {}
+
+def ensure_webui_password():
+    """返回 WebUI 登录密码；文件不存在/为空时生成随机密码并以 0600 落盘。"""
+    try:
+        if os.path.exists(PASSWORD_PATH):
+            with open(PASSWORD_PATH, "r", encoding="utf-8") as f:
+                pw = f.read().strip()
+            if pw:
+                return pw
+    except Exception:
+        pass
+    pw = secrets.token_urlsafe(12)
+    try:
+        fd = os.open(PASSWORD_PATH, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(pw + "\n")
+    except Exception as e:
+        print(f"写入 WebUI 密码文件失败: {e}")
+    return pw
+
+def _verify_webui_password(candidate):
+    try:
+        with open(PASSWORD_PATH, "r", encoding="utf-8") as f:
+            stored = f.read().strip()
+    except Exception:
+        stored = ""
+    if not stored:
+        stored = ensure_webui_password()
+    return bool(stored) and hmac.compare_digest(str(candidate or ""), stored)
+
+def _create_session():
+    token = secrets.token_urlsafe(32)
+    with _sessions_lock:
+        _sessions[token] = time.time() + SESSION_TTL
+    return token
+
+def _check_session(token):
+    if not token:
+        return False
+    with _sessions_lock:
+        exp = _sessions.get(token)
+        if exp is None:
+            return False
+        if exp < time.time():
+            _sessions.pop(token, None)
+            return False
+    return True
+
+def _drop_session(token):
+    with _sessions_lock:
+        _sessions.pop(token, None)
+
+def _drop_all_sessions():
+    with _sessions_lock:
+        _sessions.clear()
+
+def _login_locked(ip):
+    rec = _login_fails.get(ip)
+    return bool(rec) and rec[1] > time.time()
+
+def _login_failed(ip):
+    now = time.time()
+    count, lock_until = _login_fails.get(ip, (0, 0))
+    if lock_until and lock_until <= now:
+        count = 0
+    count += 1
+    _login_fails[ip] = (count, now + 60 if count >= 5 else 0)
+
+def _login_succeeded(ip):
+    _login_fails.pop(ip, None)
+
+# ============ sing-box 内核完整性校验 ============
+# sha256 引自 SagerNet 官方 GitHub Release v1.14.3 各资产的官方摘要（digest），
+# 下载可走镜像加速，但安装前必须与此处钉死值一致，否则拒绝安装。
+KERNEL_VERSION = "1.14.3"
+KERNEL_SHA256 = {
+    "1.14.3": {
+        "amd64": "e2bdf179c15a3652955dc44867e33ca0965c9c9b91b34267dcc5a5d639a5feee",
+        "arm64": "29dae24d76bea3bc62d07dd3e60cfc12003de7debbd6b768df9be9c68360174e",
+        "armv7": "8e81ee6bc1db6fec6e0342360e1de7bfabecec8d2e9c480a3563d129f84fb034",
+        "386": "92dad4663615d2cb30fb8feba48787e8529b1940004341712b0d0d4548cb42ff",
+    }
+}
+
+def _sha256_of_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 256), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 # 忽略 SSL 证书校验且绕过系统环境变量代理的 Opener
 UNVERIFIED_SSL_CTX = ssl._create_unverified_context()
@@ -2409,13 +2512,19 @@ class SingBoxManager:
         time.sleep(0.4)
         return self.start()
 
-    def download_kernel(self, custom_url=None):
+    def download_kernel(self, custom_url=None, expected_sha256=None):
         arch = self.get_arch()
-        version = "1.14.3"
+        version = KERNEL_VERSION
         if not custom_url:
             url = f"https://github.com/SagerNet/sing-box/releases/download/v{version}/sing-box-{version}-linux-{arch}.tar.gz"
+            expected = (KERNEL_SHA256.get(version) or {}).get(arch)
+            if not expected:
+                return False, f"无 sing-box {version}/{arch} 的官方 sha256 校验值，拒绝安装（请升级面板版本）"
         else:
             url = custom_url
+            expected = str(expected_sha256 or "").strip().lower()
+            if len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
+                return False, "自定义下载地址必须同时提供安装包的 sha256 校验值（64 位十六进制），拒绝未校验安装"
 
         append_log(f"开始准备下载 sing-box 内核 ({arch})...")
         tar_path = os.path.join(DATA_DIR, f"sing-box-{arch}.tar.gz")
@@ -2440,6 +2549,16 @@ class SingBoxManager:
                 )
                 with DIRECT_OPENER.open(req, timeout=25) as resp, open(tar_path, "wb") as f:
                     shutil.copyfileobj(resp, f)
+                got = _sha256_of_file(tar_path)
+                if got != expected:
+                    last_error = f"sha256 校验不通过（期望 {expected[:16]}…，实际 {got[:16]}…）"
+                    append_log(f"⚠ 内核完整性校验失败：{dl_url} 返回的文件 sha256 不匹配，已丢弃并尝试下一来源")
+                    try:
+                        os.remove(tar_path)
+                    except Exception:
+                        pass
+                    continue
+                append_log("内核 sha256 完整性校验通过")
                 download_success = True
                 break
             except Exception as e:
@@ -2447,7 +2566,7 @@ class SingBoxManager:
                 append_log("此节点下载失败或超时，自动切换下一镜像...")
 
         if not download_success:
-            return False, f"下载内核失败 (所有镜像源均超时): {last_error}"
+            return False, f"下载内核失败或完整性校验未通过: {last_error}"
 
         try:
             append_log("下载完成，正在解压内核...")
@@ -2644,14 +2763,34 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-    def _send_json(self, data, code=200):
+    def _send_json(self, data, code=200, extra_headers=None):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
+
+    def _session_token(self):
+        cookie = self.headers.get("Cookie", "") or ""
+        for part in cookie.split(";"):
+            part = part.strip()
+            if part.startswith(SESSION_COOKIE + "="):
+                return part.split("=", 1)[1]
+        return ""
+
+    def _is_authed(self):
+        return _check_session(self._session_token())
+
+    def _require_auth(self):
+        if self._is_authed():
+            return True
+        self._send_json({"success": False, "error": "unauthorized", "message": "未登录或登录已过期"}, 401)
+        return False
 
     def _read_body_json(self):
         content_len = int(self.headers.get("Content-Length", 0))
@@ -2662,6 +2801,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         try:
+            if self.path == "/api/auth/check":
+                self._send_json({"success": True, "authed": self._is_authed()})
+                return
+            if self.path.startswith("/api/") and not self._require_auth():
+                return
             if self.path == "/api/status":
                 self._send_json(manager.get_status())
             elif self.path == "/api/logs":
@@ -2708,6 +2852,49 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            if self.path == "/api/login":
+                ip = self.client_address[0]
+                if _login_locked(ip):
+                    self._send_json({"success": False, "message": "登录失败次数过多，请 60 秒后再试"}, 429)
+                    return
+                data = self._read_body_json()
+                if _verify_webui_password(data.get("password", "")):
+                    _login_succeeded(ip)
+                    token = _create_session()
+                    self._send_json({"success": True, "message": "登录成功"}, 200,
+                                    {"Set-Cookie": f"{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL}"})
+                else:
+                    _login_failed(ip)
+                    append_log(f"WebUI 登录失败（来源 {ip}）")
+                    self._send_json({"success": False, "message": "密码错误"}, 401)
+                return
+            if self.path == "/api/logout":
+                _drop_session(self._session_token())
+                self._send_json({"success": True, "message": "已退出登录"}, 200,
+                                {"Set-Cookie": f"{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"})
+                return
+            if self.path.startswith("/api/") and not self._require_auth():
+                return
+            if self.path == "/api/auth/change_password":
+                data = self._read_body_json()
+                new_pw = str(data.get("new_password", "") or "")
+                if not _verify_webui_password(data.get("old_password", "")):
+                    self._send_json({"success": False, "message": "原密码错误"}, 403)
+                    return
+                if len(new_pw) < 8:
+                    self._send_json({"success": False, "message": "新密码至少 8 位"}, 400)
+                    return
+                try:
+                    fd = os.open(PASSWORD_PATH, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        f.write(new_pw + "\n")
+                except Exception as e:
+                    self._send_json({"success": False, "message": f"保存新密码失败: {e}"})
+                    return
+                _drop_all_sessions()
+                append_log("WebUI 登录密码已修改，所有会话已失效")
+                self._send_json({"success": True, "message": "密码已修改，请重新登录"})
+                return
             if self.path == "/api/service/start":
                 ok, msg = manager.start()
                 self._send_json({"success": ok, "message": msg})
@@ -3014,7 +3201,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             elif self.path == "/api/system/install_kernel":
                 data = self._read_body_json()
                 custom_url = data.get("url", None)
-                ok, msg = manager.download_kernel(custom_url)
+                ok, msg = manager.download_kernel(custom_url, data.get("sha256"))
                 self._send_json({"success": ok, "message": msg})
             else:
                 self._send_json({"success": False, "error": "Not Found", "message": "接口不存在"}, 404)
@@ -3026,6 +3213,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 def run_server(port=9622):
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(os.path.join(DATA_DIR, "rulesets"), exist_ok=True)
+    webui_pw = ensure_webui_password()
     if os.path.exists(CONFIG_PATH):
         sanitize_config_file(CONFIG_PATH)
 
@@ -3037,6 +3225,7 @@ def run_server(port=9622):
     print(" Sing-Box WebUI 仪表盘启动成功！")
     print(f" 监听地址: http://0.0.0.0:{port}")
     print(f" 本地访问: http://127.0.0.1:{port}")
+    print(f" WebUI 登录密码: {webui_pw} (保存在 data/webui_password，可在面板中修改)")
     print(" 极简低功耗设计，适用平台: amd64 / arm64 / armv7 等")
     print("=" * 60)
 
