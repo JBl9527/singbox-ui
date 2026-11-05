@@ -68,6 +68,15 @@ _sessions = {}
 _sessions_lock = threading.Lock()
 _login_fails = {}
 
+def _store_webui_password(pw):
+    fd = os.open(PASSWORD_PATH, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(str(pw).strip() + "\n")
+    try:
+        os.chmod(PASSWORD_PATH, 0o600)
+    except Exception:
+        pass
+
 def ensure_webui_password():
     """返回 WebUI 登录密码；文件不存在/为空时生成随机密码并以 0600 落盘。"""
     try:
@@ -80,9 +89,7 @@ def ensure_webui_password():
         pass
     pw = secrets.token_urlsafe(12)
     try:
-        fd = os.open(PASSWORD_PATH, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(pw + "\n")
+        _store_webui_password(pw)
     except Exception as e:
         print(f"写入 WebUI 密码文件失败: {e}")
     return pw
@@ -2756,6 +2763,216 @@ class SingBoxManager:
 
 manager = SingBoxManager()
 
+# ================= 系统自检与一键修复 =================
+# 检查项与 setup_gateway_network() 的接管动作一一对应：sysctl 转发/rp_filter、
+# iptables（DNS 劫持/FORWARD/MASQUERADE）、策略路由 table 2022、TUN 设备与内核状态。
+# ip rule / iptables / sysctl 都是内存状态，机器重启或规则被冲掉后靠这里发现并一键恢复。
+def _run_cmd(cmd, timeout=4):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, (r.stdout or ""), (r.stderr or "")
+    except Exception as e:
+        return -1, "", str(e)
+
+def _read_sysctl_file(path):
+    try:
+        with open(path, "r") as f:
+            return f.read().strip()
+    except Exception:
+        return None
+
+def _main_iface_name():
+    rc, out, _ = _run_cmd(["ip", "-4", "route", "show", "table", "main", "default"])
+    m = re.search(r"\bdev\s+(\S+)", out or "")
+    return m.group(1) if m else ""
+
+def _iptables_has(args):
+    if not shutil.which("iptables"):
+        return None
+    rc, _, _ = _run_cmd(["iptables"] + args)
+    return rc == 0
+
+def _check_item(cid, name, status, detail, fixable=False):
+    return {"id": cid, "name": name, "status": status, "detail": detail, "fixable": fixable}
+
+def run_selfcheck():
+    items = []
+    try:
+        running = manager.is_running()
+    except Exception:
+        running = False
+
+    # 1. 内核已安装
+    bin_path = getattr(manager, "bin_path", "") or ""
+    if bin_path and os.path.exists(bin_path):
+        ver = str(manager.check_version())
+        st = "ok" if KERNEL_VERSION in ver else "warn"
+        items.append(_check_item("kernel_installed", "内核已安装", st,
+                                 f"{ver}（面板钉死版本 {KERNEL_VERSION}）", fixable=(st != "ok")))
+    else:
+        items.append(_check_item("kernel_installed", "内核已安装", "fail", "未找到 sing-box 二进制", fixable=True))
+
+    # 2. 内核运行中
+    items.append(_check_item("kernel_running", "内核运行中", "ok" if running else "fail",
+                             "sing-box 进程运行中" if running else "sing-box 进程未运行", fixable=not running))
+
+    # 3. 配置合法性
+    if not os.path.exists(CONFIG_PATH):
+        items.append(_check_item("config_valid", "配置合法性", "warn", "尚未生成 config.json（请先导入订阅）"))
+    elif not (bin_path and os.path.exists(bin_path)):
+        items.append(_check_item("config_valid", "配置合法性", "warn", "内核未安装，无法校验配置"))
+    else:
+        rc, out, err = _run_cmd([bin_path, "check", "-c", CONFIG_PATH], timeout=8)
+        if rc == 0:
+            items.append(_check_item("config_valid", "配置合法性", "ok", "sing-box check 通过"))
+        else:
+            items.append(_check_item("config_valid", "配置合法性", "fail",
+                                     f"sing-box check 失败：{(err or out).strip()[:200]}"))
+
+    # 4. TUN 设备
+    if not running:
+        items.append(_check_item("tun_device", "TUN 设备 tun0", "warn", "内核未运行，无法确认 tun0"))
+    elif os.path.exists("/sys/class/net/tun0"):
+        rc, out, _ = _run_cmd(["ip", "-o", "-4", "addr", "show", "dev", "tun0"])
+        has_ip = "inet " in (out or "")
+        items.append(_check_item("tun_device", "TUN 设备 tun0", "ok" if has_ip else "warn",
+                                 "tun0 已创建并配有 IPv4 地址" if has_ip else "tun0 已创建但无 IPv4 地址",
+                                 fixable=not has_ip))
+    else:
+        items.append(_check_item("tun_device", "TUN 设备 tun0", "fail",
+                                 "tun0 不存在（转发流量无法进入内核分流）", fixable=True))
+
+    # 5. IPv4 转发
+    v = _read_sysctl_file("/proc/sys/net/ipv4/ip_forward")
+    items.append(_check_item("ip_forward", "IPv4 转发", "ok" if v == "1" else "fail",
+                             f"net.ipv4.ip_forward = {v}", fixable=(v != "1")))
+
+    # 6. rp_filter
+    v = _read_sysctl_file("/proc/sys/net/ipv4/conf/all/rp_filter")
+    items.append(_check_item("rp_filter", "rp_filter 关闭", "ok" if v == "0" else "fail",
+                             f"net.ipv4.conf.all.rp_filter = {v}（旁路由需为 0）", fixable=(v != "0")))
+
+    # 7. DNS 劫持规则
+    dns_states, dns_unknown = [], False
+    for proto in ("udp", "tcp"):
+        r = _iptables_has(["-t", "nat", "-C", "PREROUTING", "-p", proto, "--dport", "53",
+                           "-j", "REDIRECT", "--to-ports", "53"])
+        if r is None:
+            dns_unknown = True
+        else:
+            dns_states.append(r)
+    if dns_unknown:
+        items.append(_check_item("dns_hijack", "DNS 劫持规则", "warn", "无 iptables 命令，无法确认"))
+    elif all(dns_states):
+        items.append(_check_item("dns_hijack", "DNS 劫持规则", "ok", "udp/tcp 53 端口重定向规则齐全"))
+    else:
+        items.append(_check_item("dns_hijack", "DNS 劫持规则", "fail",
+                                 "DNS 劫持规则缺失（局域网 DNS 会绕过分流）", fixable=True))
+
+    # 8. FORWARD 放行 tun0
+    if not shutil.which("iptables"):
+        items.append(_check_item("forward_tun", "FORWARD 放行 tun0", "warn", "无 iptables 命令，无法确认"))
+    else:
+        rc, out, _ = _run_cmd(["iptables", "-S", "FORWARD"])
+        ok = ("-P FORWARD ACCEPT" in (out or "")) or (("tun0" in (out or "")) and ("ACCEPT" in (out or "")))
+        items.append(_check_item("forward_tun", "FORWARD 放行 tun0", "ok" if ok else "fail",
+                                 "FORWARD 链已放行" if ok else "FORWARD 未放行 tun0 转发流量", fixable=not ok))
+
+    # 9. MASQUERADE
+    iface = _main_iface_name()
+    if not iface:
+        items.append(_check_item("masquerade", "NAT MASQUERADE", "warn", "无法确定主网卡，跳过"))
+    else:
+        r = _iptables_has(["-t", "nat", "-C", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"])
+        if r is None:
+            items.append(_check_item("masquerade", "NAT MASQUERADE", "warn", "无 iptables 命令，无法确认"))
+        else:
+            items.append(_check_item("masquerade", "NAT MASQUERADE", "ok" if r else "fail",
+                                     f"{iface} 出口 MASQUERADE 已配置" if r else f"{iface} 出口缺少 MASQUERADE（转发流量无法回程）",
+                                     fixable=not r))
+
+    # 10. 策略路由 table 2022
+    if not shutil.which("ip"):
+        items.append(_check_item("policy_rule", "策略路由 (table 2022)", "warn", "无 ip 命令，无法确认"))
+    else:
+        rc, out, _ = _run_cmd(["ip", "-4", "rule", "show"])
+        try:
+            ifaces = _get_gateway_ifaces()
+        except Exception:
+            ifaces = []
+        hit = [i for i in ifaces if (f"iif {i}" in (out or "")) and ("2022" in (out or ""))]
+        if hit:
+            items.append(_check_item("policy_rule", "策略路由 (table 2022)", "ok", f"已覆盖网卡：{', '.join(hit)}"))
+        else:
+            items.append(_check_item("policy_rule", "策略路由 (table 2022)", "fail",
+                                     "未发现 iif→2022 策略路由（局域网转发流量会绕过内核）", fixable=True))
+
+    # 11. WebUI 密码文件
+    if not os.path.exists(PASSWORD_PATH):
+        items.append(_check_item("password_file", "WebUI 密码文件", "warn",
+                                 "webui_password 不存在（下次登录校验时会自动生成）", fixable=True))
+    else:
+        mode = os.stat(PASSWORD_PATH).st_mode & 0o777
+        items.append(_check_item("password_file", "WebUI 密码文件", "ok" if mode == 0o600 else "warn",
+                                 f"权限 {oct(mode)}" + ("" if mode == 0o600 else "（应为 600）"),
+                                 fixable=(mode != 0o600)))
+
+    # 12. 直连探针（信息项）
+    try:
+        req = urllib.request.Request("http://www.baidu.com/", headers={"User-Agent": "Mozilla/5.0"})
+        with DIRECT_OPENER.open(req, timeout=4) as resp:
+            items.append(_check_item("probe_direct", "直连探针", "ok", f"baidu.com HTTP {resp.status}"))
+    except Exception as e:
+        items.append(_check_item("probe_direct", "直连探针", "warn", f"直连访问异常：{str(e)[:80]}"))
+
+    # 13. 代理探针（经 mixed 入站验证数据面）
+    if not running:
+        items.append(_check_item("probe_proxy", "代理探针", "warn", "内核未运行，跳过"))
+    else:
+        port = 2080
+        try:
+            cfg = _get_effective_config_dict()
+            for ib in cfg.get("inbounds", []):
+                if ib.get("type") == "mixed":
+                    port = int(ib.get("listen_port", 2080))
+                    break
+        except Exception:
+            pass
+        try:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler(
+                {"http": f"http://127.0.0.1:{port}", "https": f"http://127.0.0.1:{port}"}))
+            req = urllib.request.Request("http://www.gstatic.com/generate_204", headers={"User-Agent": "Mozilla/5.0"})
+            with opener.open(req, timeout=5) as resp:
+                items.append(_check_item("probe_proxy", "代理探针", "ok", f"经 mixed :{port} 返回 HTTP {resp.status}"))
+        except Exception as e:
+            items.append(_check_item("probe_proxy", "代理探针", "warn", f"经 mixed :{port} 探针异常：{str(e)[:80]}"))
+
+    return {"success": True,
+            "summary": {"ok": sum(1 for i in items if i["status"] == "ok"),
+                        "warn": sum(1 for i in items if i["status"] == "warn"),
+                        "fail": sum(1 for i in items if i["status"] == "fail"),
+                        "total": len(items)},
+            "items": items}
+
+def _repair_item(cid):
+    """执行单项修复，返回 (ok, message)。"""
+    if cid == "kernel_installed":
+        return manager.download_kernel()
+    if cid == "kernel_running":
+        return manager.start()
+    if cid == "tun_device":
+        return manager.restart()
+    if cid in ("ip_forward", "rp_filter", "dns_hijack", "forward_tun", "masquerade", "policy_rule"):
+        setup_gateway_network()
+        return True, "已重新应用网关接管配置（sysctl / iptables / 策略路由），请看复查结果"
+    if cid == "password_file":
+        if not os.path.exists(PASSWORD_PATH):
+            ensure_webui_password()
+            return True, "已生成 WebUI 密码（见 data/webui_password）"
+        os.chmod(PASSWORD_PATH, 0o600)
+        return True, "已将密码文件权限修正为 600"
+    return False, "该项不支持自动修复"
+
 class DashboardHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=STATIC_DIR, **kwargs)
@@ -2805,6 +3022,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._send_json({"success": True, "authed": self._is_authed()})
                 return
             if self.path.startswith("/api/") and not self._require_auth():
+                return
+            if self.path == "/api/system/selfcheck":
+                self._send_json(run_selfcheck())
                 return
             if self.path == "/api/status":
                 self._send_json(manager.get_status())
@@ -2885,15 +3105,32 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     self._send_json({"success": False, "message": "新密码至少 8 位"}, 400)
                     return
                 try:
-                    fd = os.open(PASSWORD_PATH, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        f.write(new_pw + "\n")
+                    _store_webui_password(new_pw)
                 except Exception as e:
                     self._send_json({"success": False, "message": f"保存新密码失败: {e}"})
                     return
                 _drop_all_sessions()
                 append_log("WebUI 登录密码已修改，所有会话已失效")
                 self._send_json({"success": True, "message": "密码已修改，请重新登录"})
+                return
+            if self.path == "/api/system/repair":
+                data = self._read_body_json()
+                results = []
+                targets = []
+                if data.get("all"):
+                    targets = [i["id"] for i in run_selfcheck()["items"] if i["fixable"] and i["status"] != "ok"]
+                elif data.get("id"):
+                    targets = [str(data.get("id"))]
+                for cid in targets:
+                    try:
+                        ok, msg = _repair_item(cid)
+                    except Exception as e:
+                        ok, msg = False, str(e)
+                    results.append({"id": cid, "success": ok, "message": msg})
+                    append_log(f"自检修复[{cid}]: {'成功' if ok else '失败'} - {msg}")
+                fresh = run_selfcheck()
+                fresh["repair_results"] = results
+                self._send_json(fresh)
                 return
             if self.path == "/api/service/start":
                 ok, msg = manager.start()
@@ -3250,5 +3487,17 @@ def run_server(port=9622):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Sing-Box WebUI Dashboard")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 9622)), help="WebUI 端口 (默认 9622)")
+    parser.add_argument("--reset-password", nargs="?", const="", default=None, metavar="NEW_PASSWORD",
+                        help="重置 WebUI 登录密码后退出（不指定新密码则随机生成）")
     args = parser.parse_args()
+    if args.reset_password is not None:
+        new_pw = args.reset_password or secrets.token_urlsafe(12)
+        if len(new_pw) < 8:
+            print("新密码至少 8 位")
+            sys.exit(1)
+        os.makedirs(DATA_DIR, exist_ok=True)
+        _store_webui_password(new_pw)
+        print(f"WebUI 登录密码已重置为: {new_pw}")
+        print("请重启 singbox-ui 服务后使用新密码登录（如 systemctl restart singbox-ui）。")
+        sys.exit(0)
     run_server(port=args.port)
