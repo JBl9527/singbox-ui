@@ -95,6 +95,22 @@ singbox-ui/
 
 ---
 
+## 🛠️ 运维：忘记密码与系统自检
+
+**忘记 WebUI 密码**时，在服务器上任选一种方式重置（随后重启服务生效）：
+
+```bash
+# 方式一：随机生成新密码并打印出来
+sudo python3 /opt/singbox-ui/app.py --reset-password
+# 方式二：指定新密码（至少 8 位）
+sudo python3 /opt/singbox-ui/app.py --reset-password '你的新密码'
+sudo systemctl restart singbox-ui
+```
+
+也可以直接删掉 `/opt/singbox-ui/data/webui_password` 后重启服务，面板会重新生成随机密码并写入该文件。
+
+**系统自检**：面板首页有「🩺 系统自检」卡片，一键检查内核安装/运行状态、配置合法性、TUN 设备、IPv4 转发、rp_filter、DNS 劫持规则、FORWARD 放行、MASQUERADE 与策略路由（table 2022）共 13 项——旁路由"流量不进内核"通常就是其中一项在重启后丢失。可修复项带「修复」按钮，也可一键修复全部（重新应用网关接管配置 / 启动或重启内核）。
+
 ## 🗑️ 一键彻底卸载命令
 
 如果你需要从系统彻底清除该面板及内核，可以使用以下任一方式：
