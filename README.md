@@ -55,6 +55,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/JBl9527/singbox-ui/main/inst
 5. **开箱自启机制**：
    - 自动生成 `singbox-ui.service` systemd 服务，配置开机自启
    - **安装完成后内核与 WebUI 全部自动启动**，并自动在终端打印出公网与内网 WebUI 访问链接
+6. **登录鉴权与内核完整性校验**：
+   - WebUI 启用密码登录：随机密码保存在 `/opt/singbox-ui/data/webui_password`（权限 600），安装结束时会在终端打印，也可在面板中修改密码
+   - sing-box 内核（安装脚本与面板一键下载两条路径）在解压安装前强制校验官方 sha256，校验不通过直接拒绝安装；经镜像加速下载的包同样必须通过校验
 
 ---
 
